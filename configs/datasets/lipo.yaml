@@ -1,0 +1,10 @@
+dataset:
+  name: "lipo"
+  file: "refined_Lipophilicity.csv"
+  smiles_column: "smiles"
+  target_column: "measured"
+  task_type: "regression"
+  metric: "rmse"
+
+expected:
+  rmse: 0.62

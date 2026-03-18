@@ -1,0 +1,12 @@
+﻿__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+data/raw/*.csv
+data/processed/
+experiments/
+logs/
+*.pkl
+*.pt
+*.pth
+.DS_Store

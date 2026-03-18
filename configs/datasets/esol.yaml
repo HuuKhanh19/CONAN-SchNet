@@ -1,0 +1,11 @@
+# ESOL Dataset Configuration
+dataset:
+  name: "esol"
+  file: "refined_ESOL.csv"
+  smiles_column: "smiles"
+  target_column: "measured"
+  task_type: "regression"
+  metric: "rmse"
+
+expected:
+  rmse: 1.05
