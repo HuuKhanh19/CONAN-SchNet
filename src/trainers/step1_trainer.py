@@ -57,7 +57,6 @@ class Step1Trainer:
             mode='min',
             factor=tcfg.get('scheduler_factor', 0.5),
             patience=tcfg.get('scheduler_patience', 25),
-            verbose=True,
         )
 
         self.epochs = tcfg.get('epochs', 300)

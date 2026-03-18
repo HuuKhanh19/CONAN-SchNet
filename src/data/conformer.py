@@ -36,16 +36,22 @@ def smiles_to_3d(
     # ETKDG conformer generation
     params = AllChem.ETKDGv3()
     params.randomSeed = random_seed
-    params.maxAttempts = max_attempts
     params.numThreads = 0  # auto
     params.pruneRmsThresh = 0.5
+    # maxAttempts removed from params in RDKit 2025
+    try:
+        params.maxAttempts = max_attempts
+    except AttributeError:
+        pass
 
-    n_confs = AllChem.EmbedMultipleConfs(mol, numConfs=num_conformers, params=params)
+    conf_ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_conformers, params=params)
+    n_confs = len(conf_ids)
 
     if n_confs == 0:
         # Fallback: random coordinates
         params.useRandomCoords = True
-        n_confs = AllChem.EmbedMultipleConfs(mol, numConfs=1, params=params)
+        conf_ids = AllChem.EmbedMultipleConfs(mol, numConfs=1, params=params)
+        n_confs = len(conf_ids)
         if n_confs == 0:
             return None
 

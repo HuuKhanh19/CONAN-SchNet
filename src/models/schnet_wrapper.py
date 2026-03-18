@@ -63,7 +63,6 @@ class SchNetWrapper(nn.Module):
             radial_basis=GaussianRBF(n_rbf=n_rbf, cutoff=cutoff),
             cutoff_fn=CosineCutoff(cutoff=cutoff),
             n_filters=n_filters,
-            max_z=max_z,
         )
 
         # Prediction head (MLP)
@@ -169,6 +168,9 @@ class SchNetWrapper(nn.Module):
         # Compute neighbor list
         idx_i, idx_j, offsets = self.compute_neighbors(positions, batch_idx, n_atoms)
 
+        # Compute pairwise distance vectors (required by schnetpack)
+        Rij = positions[idx_j] - positions[idx_i]
+
         # Build schnetpack input dict
         spk_inputs = {
             structure.Z: atomic_numbers,
@@ -177,6 +179,7 @@ class SchNetWrapper(nn.Module):
             structure.idx_i: idx_i,
             structure.idx_j: idx_j,
             structure.offsets: offsets,
+            structure.Rij: Rij,
         }
 
         # SchNet representation -> per-atom features (total_atoms, n_atom_basis)
