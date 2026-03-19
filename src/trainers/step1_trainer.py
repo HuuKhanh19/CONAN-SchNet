@@ -1,8 +1,8 @@
 """
-Step 2 Trainer: SchNet + EGGROLL (Evolution Strategies).
+Step 1 Trainer: SchNet Baseline with SGD.
 
-Fine-tune pretrained SchNet (from Step 1) using EGGROLL optimizer.
-Full-batch fitness evaluation, early stopping on validation metric.
+Standard gradient descent training for molecular property prediction.
+Supports regression (RMSE/MAE) and classification (AUC).
 """
 
 import os
@@ -11,15 +11,15 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from sklearn.metrics import roc_auc_score
 
-from src.optimizers.eggroll import EGGROLL, EGGROLLConfig
 
-
-class Step2Trainer:
-    """EGGROLL trainer for SchNet fine-tuning."""
+class Step1Trainer:
+    """SGD trainer for SchNet baseline."""
 
     def __init__(
         self,
@@ -37,119 +37,104 @@ class Step2Trainer:
         self.task_type = config['dataset']['task_type']
         self.metric_name = config['dataset'].get('metric', 'rmse')
 
-        # EGGROLL config
-        ecfg = config.get('eggroll', {})
-        eggroll_config = EGGROLLConfig(
-            population_size=ecfg.get('population_size', 32),
-            rank=ecfg.get('rank', 16),
-            sigma=ecfg.get('sigma', 0.01),
-            learning_rate=ecfg.get('learning_rate', 0.1),
-            num_generations=ecfg.get('num_generations', 400),
-            use_antithetic=ecfg.get('use_antithetic', True),
-            normalize_fitness=ecfg.get('normalize_fitness', True),
-            rank_transform=ecfg.get('rank_transform', True),
-            centered_rank=ecfg.get('centered_rank', True),
-            weight_decay=ecfg.get('weight_decay', 0.0),
-            lr_decay=ecfg.get('lr_decay', 0.99),
-            sigma_decay=ecfg.get('sigma_decay', 0.99),
-            seed=config['data'].get('random_seed', 42),
+        # Loss
+        if self.task_type == 'classification':
+            self.criterion = nn.BCELoss()
+        else:
+            self.criterion = nn.MSELoss()
+
+        # Optimizer
+        tcfg = config['training']
+        self.optimizer = Adam(
+            model.parameters(),
+            lr=tcfg.get('learning_rate', 5e-4),
+            weight_decay=tcfg.get('weight_decay', 1e-5),
         )
 
-        self.optimizer = EGGROLL(model, eggroll_config, device=device)
-        self.num_generations = eggroll_config.num_generations
-        self.patience = ecfg.get('patience', 200)
-        self.eval_every = ecfg.get('eval_every', 5)
+        # Scheduler
+        self.scheduler = ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=tcfg.get('scheduler_factor', 0.5),
+            patience=tcfg.get('scheduler_patience', 25),
+        )
+
+        self.epochs = tcfg.get('epochs', 300)
+        self.patience = tcfg.get('early_stopping_patience', 50)
+        self.gradient_clip = tcfg.get('gradient_clip', 1.0)
 
         # Tracking
         self.best_val_metric = float('inf')
-        self.best_generation = 0
+        self.best_epoch = 0
         self.no_improve_count = 0
         self.history = []
 
-    def _collect_full_batch(self, loader: DataLoader) -> Dict[str, torch.Tensor]:
-        """Collect all batches into a single full-batch dict."""
-        all_z, all_pos, all_idx_m, all_n_atoms, all_target = [], [], [], [], []
-        offset = 0
+    def train_epoch(self, loader: DataLoader) -> Dict[str, float]:
+        self.model.train()
+        total_loss = 0.0
+        n_samples = 0
 
         for batch in loader:
-            n_mols = batch['_n_atoms'].shape[0]
-            all_z.append(batch['_atomic_numbers'])
-            all_pos.append(batch['_positions'])
-            # Shift batch indices by current molecule offset
-            all_idx_m.append(batch['_idx_m'] + offset)
-            all_n_atoms.append(batch['_n_atoms'])
-            all_target.append(batch['target'])
-            offset += n_mols
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            target = batch.pop('target')
 
-        return {
-            '_atomic_numbers': torch.cat(all_z).to(self.device),
-            '_positions': torch.cat(all_pos).to(self.device),
-            '_idx_m': torch.cat(all_idx_m).to(self.device),
-            '_n_atoms': torch.cat(all_n_atoms).to(self.device),
-            'target': torch.cat(all_target).to(self.device),
-        }
-
-    def _fitness_fn(self, model: nn.Module, data: Dict[str, torch.Tensor]) -> float:
-        """
-        Fitness function: -RMSE for regression, AUC for classification.
-        Higher is better.
-        """
-        model.eval()
-        inputs = {k: v for k, v in data.items() if k != 'target'}
-        target = data['target']
-
-        with torch.no_grad():
-            output = model(inputs)
+            self.optimizer.zero_grad()
+            output = self.model(batch)
             pred = output['prediction']
+            loss = self.criterion(pred, target)
+            loss.backward()
 
-        if self.task_type == 'regression':
-            rmse = torch.sqrt(torch.mean((pred - target) ** 2)).item()
-            return -rmse  # Higher is better
-        else:
-            try:
-                auc = roc_auc_score(target.cpu().numpy(), pred.cpu().numpy())
-                return auc
-            except ValueError:
-                return 0.0
+            if self.gradient_clip > 0:
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+
+            self.optimizer.step()
+            total_loss += loss.item() * target.shape[0]
+            n_samples += target.shape[0]
+
+        return {'loss': total_loss / max(n_samples, 1)}
 
     @torch.no_grad()
-    def evaluate(self, data: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """Evaluate model on full-batch data."""
+    def evaluate(self, loader: DataLoader) -> Dict[str, float]:
         self.model.eval()
-        inputs = {k: v for k, v in data.items() if k != 'target'}
-        target = data['target']
+        all_preds = []
+        all_targets = []
+        total_loss = 0.0
+        n_samples = 0
 
-        output = self.model(inputs)
-        pred = output['prediction']
+        for batch in loader:
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            target = batch.pop('target')
 
-        preds = pred.cpu().numpy()
-        targets = target.cpu().numpy()
+            output = self.model(batch)
+            pred = output['prediction']
+            loss = self.criterion(pred, target)
 
-        metrics = {}
+            total_loss += loss.item() * target.shape[0]
+            n_samples += target.shape[0]
+            all_preds.append(pred.cpu().numpy())
+            all_targets.append(target.cpu().numpy())
+
+        preds = np.concatenate(all_preds)
+        targets = np.concatenate(all_targets)
+
+        metrics = {'loss': total_loss / max(n_samples, 1)}
+
         if self.task_type == 'regression':
             metrics['rmse'] = float(np.sqrt(np.mean((preds - targets) ** 2)))
             metrics['mae'] = float(np.mean(np.abs(preds - targets)))
-            mse = float(np.mean((preds - targets) ** 2))
-            metrics['loss'] = mse
         else:
             try:
                 metrics['auc'] = float(roc_auc_score(targets, preds))
             except ValueError:
                 metrics['auc'] = 0.0
-            # BCE loss
-            eps = 1e-7
-            preds_clipped = np.clip(preds, eps, 1 - eps)
-            metrics['loss'] = float(-np.mean(
-                targets * np.log(preds_clipped) + (1 - targets) * np.log(1 - preds_clipped)
-            ))
 
         return metrics
 
     def get_val_score(self, metrics: Dict[str, float]) -> float:
-        """Lower is better for early stopping."""
+        """Get validation score (lower is better for early stopping)."""
         if self.task_type == 'classification':
-            return -metrics.get('auc', 0.0)
-        return metrics.get('rmse', metrics.get('loss', float('inf')))
+            return -metrics.get('auc', 0.0)  # Negate: higher AUC = lower score
+        return metrics.get('rmse', metrics['loss'])
 
     def train(
         self,
@@ -157,120 +142,74 @@ class Step2Trainer:
         valid_loader: DataLoader,
         test_loader: Optional[DataLoader] = None,
     ) -> Dict[str, Any]:
-        ecfg = self.config.get('eggroll', {})
-        print(f"\nStarting Step 2 Training (EGGROLL, {self.task_type})")
+        print(f"\nStarting Step 1 Training ({self.task_type})")
         print(f"  Model params: {self.model.num_trainable_params:,}")
-        print(f"  Generations: {self.num_generations}, patience: {self.patience}")
-        print(f"  N={ecfg.get('population_size', 32)}, r={ecfg.get('rank', 16)}, "
-              f"sigma={ecfg.get('sigma', 0.01)}, lr={ecfg.get('learning_rate', 0.1)}")
-        print(f"  Eval every {self.eval_every} generations")
+        print(f"  Epochs: {self.epochs}, patience: {self.patience}")
+        print(f"  LR: {self.config['training']['learning_rate']}, "
+              f"batch_size: {self.config['training']['batch_size']}")
         print("-" * 70)
-
-        # Collect full-batch data
-        print("Collecting full-batch data...")
-        train_data = self._collect_full_batch(train_loader)
-        valid_data = self._collect_full_batch(valid_loader)
-        test_data = self._collect_full_batch(test_loader) if test_loader else None
-        print(f"  Train: {train_data['target'].shape[0]} molecules")
-        print(f"  Valid: {valid_data['target'].shape[0]} molecules")
-        if test_data:
-            print(f"  Test:  {test_data['target'].shape[0]} molecules")
-
-        # Initial evaluation
-        init_metrics = self.evaluate(valid_data)
-        init_score = self.get_val_score(init_metrics)
-        self.best_val_metric = init_score
-        if self.task_type == 'regression':
-            print(f"Initial val_rmse={init_metrics['rmse']:.4f}, val_mae={init_metrics['mae']:.4f}")
-        else:
-            print(f"Initial val_auc={init_metrics.get('auc', 0):.4f}")
-
-        # Save initial model as best
-        torch.save(
-            self.model.state_dict(),
-            os.path.join(self.experiment_dir, 'best_model.pt'),
-        )
 
         start_time = time.time()
 
-        for gen in range(1, self.num_generations + 1):
-            gen_start = time.time()
+        for epoch in range(1, self.epochs + 1):
+            epoch_start = time.time()
 
-            # EGGROLL step
-            stats = self.optimizer.step(
-                fitness_fn=self._fitness_fn,
-                data=train_data,
-                verbose=False,
-            )
+            # Train
+            train_metrics = self.train_epoch(train_loader)
 
-            gen_elapsed = time.time() - gen_start
+            # Validate
+            val_metrics = self.evaluate(valid_loader)
+            val_score = self.get_val_score(val_metrics)
 
+            # Scheduler
+            self.scheduler.step(val_score)
+
+            # Early stopping
+            if val_score < self.best_val_metric:
+                self.best_val_metric = val_score
+                self.best_epoch = epoch
+                self.no_improve_count = 0
+                # Save best model
+                torch.save(
+                    self.model.state_dict(),
+                    os.path.join(self.experiment_dir, 'best_model.pt'),
+                )
+            else:
+                self.no_improve_count += 1
+
+            # Log
+            elapsed = time.time() - epoch_start
             record = {
-                'generation': gen,
-                'mean_fitness': stats['mean_fitness'],
-                'max_fitness': stats['max_fitness'],
-                'best_fitness': stats['best_fitness'],
-                'std_fitness': stats['std_fitness'],
-                'lr': stats['learning_rate'],
-                'sigma': stats['sigma'],
-                'elapsed': gen_elapsed,
+                'epoch': epoch,
+                'train_loss': train_metrics['loss'],
+                'val_loss': val_metrics['loss'],
+                'elapsed': elapsed,
+                'lr': self.optimizer.param_groups[0]['lr'],
             }
+            if self.task_type == 'regression':
+                record['val_rmse'] = val_metrics['rmse']
+                record['val_mae'] = val_metrics['mae']
+            else:
+                record['val_auc'] = val_metrics.get('auc', 0.0)
+            self.history.append(record)
 
-            # Evaluate on validation set periodically
-            if gen % self.eval_every == 0 or gen == 1:
-                val_metrics = self.evaluate(valid_data)
-                val_score = self.get_val_score(val_metrics)
-
+            # Print progress
+            if epoch % 5 == 0 or epoch == 1:
                 if self.task_type == 'regression':
-                    record['val_rmse'] = val_metrics['rmse']
-                    record['val_mae'] = val_metrics['mae']
-                else:
-                    record['val_auc'] = val_metrics.get('auc', 0.0)
-                record['val_loss'] = val_metrics['loss']
-
-                # Early stopping check
-                if val_score < self.best_val_metric:
-                    self.best_val_metric = val_score
-                    self.best_generation = gen
-                    self.no_improve_count = 0
-                    torch.save(
-                        self.model.state_dict(),
-                        os.path.join(self.experiment_dir, 'best_model.pt'),
-                    )
-                else:
-                    self.no_improve_count += self.eval_every
-
-                # Print progress
-                if self.task_type == 'regression':
-                    print(f"Gen {gen:4d} | fitness={stats['mean_fitness']:.4f} "
-                          f"(max={stats['max_fitness']:.4f}) | "
+                    print(f"Epoch {epoch:3d} | train_loss={train_metrics['loss']:.4f} | "
                           f"val_rmse={val_metrics['rmse']:.4f} | "
                           f"val_mae={val_metrics['mae']:.4f} | "
-                          f"lr={stats['learning_rate']:.4e} | "
-                          f"sigma={stats['sigma']:.4e} | "
-                          f"{gen_elapsed:.1f}s")
+                          f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
+                          f"{elapsed:.1f}s")
                 else:
-                    print(f"Gen {gen:4d} | fitness={stats['mean_fitness']:.4f} "
-                          f"(max={stats['max_fitness']:.4f}) | "
+                    print(f"Epoch {epoch:3d} | train_loss={train_metrics['loss']:.4f} | "
                           f"val_auc={val_metrics.get('auc', 0):.4f} | "
-                          f"lr={stats['learning_rate']:.4e} | "
-                          f"{gen_elapsed:.1f}s")
+                          f"lr={self.optimizer.param_groups[0]['lr']:.2e} | "
+                          f"{elapsed:.1f}s")
 
-                if self.no_improve_count >= self.patience:
-                    print(f"\nEarly stopping at gen {gen} (best={self.best_generation})")
-                    break
-            else:
-                # Brief log every 20 gens
-                if gen % 20 == 0:
-                    train_metrics = self.evaluate(train_data)
-                    if self.task_type == 'regression':
-                        print(f"Gen {gen:4d} | fitness={stats['mean_fitness']:.4f} "
-                              f"(max={stats['max_fitness']:.4f}) | "
-                              f"train_rmse={train_metrics['rmse']:.4f} | "
-                              f"lr={stats['learning_rate']:.4e} | "
-                              f"{gen_elapsed:.1f}s")
-
-            self.history.append(record)
+            if self.no_improve_count >= self.patience:
+                print(f"\nEarly stopping at epoch {epoch} (best={self.best_epoch})")
+                break
 
         total_time = time.time() - start_time
         print(f"\nTraining done in {total_time:.1f}s ({total_time/60:.1f}min)")
@@ -282,28 +221,20 @@ class Step2Trainer:
         )
 
         test_metrics = {}
-        if test_data is not None:
-            test_metrics = self.evaluate(test_data)
-            print(f"\nTest Results (best gen {self.best_generation}):")
+        if test_loader is not None:
+            test_metrics = self.evaluate(test_loader)
+            print(f"\nTest Results (best epoch {self.best_epoch}):")
             if self.task_type == 'regression':
                 print(f"  RMSE: {test_metrics['rmse']:.4f}")
                 print(f"  MAE:  {test_metrics['mae']:.4f}")
             else:
                 print(f"  AUC:  {test_metrics.get('auc', 0):.4f}")
 
-        # Also evaluate on train for reference
-        train_final = self.evaluate(train_data)
-        print(f"\nTrain (best model):")
-        if self.task_type == 'regression':
-            print(f"  RMSE: {train_final['rmse']:.4f}")
-            print(f"  MAE:  {train_final['mae']:.4f}")
-
         # Save results
         results = {
-            'best_generation': self.best_generation,
+            'best_epoch': self.best_epoch,
             'total_time_s': total_time,
             'test_metrics': test_metrics,
-            'train_metrics_final': train_final,
             'val_best_score': self.best_val_metric,
             'config': self.config,
             'history': self.history,

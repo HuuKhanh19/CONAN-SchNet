@@ -18,11 +18,11 @@ schnet:
 
 # Conformer generation
 conformer:
-  num_conformers: 10       # RDKit conformers per molecule
+  num_conformers: 1        # Single ETKDG conformer per molecule
   max_attempts: 500        # Max ETKDG attempts
   prune_rms_thresh: 0.5    # RMSD threshold for pruning
   use_random_coords: false
-  optimize_mmff: true       # MMFF94 force field optimization
+  optimize_mmff: false      # No MMFF optimization
 
 # Training settings (Step 1 - SGD baseline)
 training:

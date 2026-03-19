@@ -14,9 +14,9 @@ RDLogger.DisableLog('rdApp.*')
 
 def smiles_to_3d(
     smiles: str,
-    num_conformers: int = 10,
+    num_conformers: int = 1,
     max_attempts: int = 500,
-    optimize_mmff: bool = True,
+    optimize_mmff: bool = False,
     random_seed: int = 42,
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """
@@ -112,8 +112,8 @@ def smiles_to_3d(
 
 def batch_smiles_to_3d(
     smiles_list: list,
-    num_conformers: int = 10,
-    optimize_mmff: bool = True,
+    num_conformers: int = 1,
+    optimize_mmff: bool = False,
     random_seed: int = 42,
     verbose: bool = True,
 ) -> Tuple[list, list, list]:
