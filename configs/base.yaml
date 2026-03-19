@@ -40,7 +40,7 @@ training:
 # EGGROLL settings (Step 2)
 eggroll:
   population_size: 32
-  rank: 16
+  rank: 4
   sigma: 0.01
   learning_rate: 0.1
   num_generations: 400
@@ -51,7 +51,8 @@ eggroll:
   weight_decay: 0.0
   lr_decay: 0.99
   sigma_decay: 0.99
-  patience: 200
+  patience: 150
+  eval_every: 5
 
 # GP settings (Step 3)
 gp:
