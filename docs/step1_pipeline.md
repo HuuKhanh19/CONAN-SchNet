@@ -10,10 +10,10 @@ Goal: reproduce published SchNet baselines trên MoleculeNet benchmarks.
 SMILES (string)
   │
   ▼
-RDKit ETKDG + MMFF94 optimization
+RDKit ETKDGv3 (single conformer, no MMFF optimization)
   │
   ▼
-(atomic_numbers, positions)    ← heavy atoms only, best conformer by energy
+(atomic_numbers, positions)    ← heavy atoms only
   │
   ▼
 SchNet Representation (schnetpack 2.1.1)
@@ -62,8 +62,8 @@ Columns output: `smiles`, `target`
 
 ### 2. Conformer Generation (cached)
 Lần đầu chạy train:
-- SMILES → RDKit AddHs → ETKDGv3 (10 conformers, seed=42)
-- MMFF94 optimization → pick lowest energy conformer
+- SMILES → RDKit AddHs → ETKDGv3 (1 conformer, seed=42)
+- **Không** MMFF optimization — dùng trực tiếp ETKDG geometry
 - Remove Hs → heavy atoms only
 - Extract: atomic_numbers (int64), positions (float32, Angstrom)
 - Cache to pickle: `data/processed/{dataset}/conformers/{split}.pkl`
@@ -95,6 +95,10 @@ Lần sau: load từ cache, ~instant.
 ## Training Config
 
 ```yaml
+conformer:
+  num_conformers: 1        # Single ETKDG conformer
+  optimize_mmff: false      # No MMFF optimization
+
 training:
   epochs: 300
   batch_size: 32
@@ -122,14 +126,15 @@ training:
 ## Results (ESOL)
 ```
 Model: 464,129 params
-Training: 118 epochs, 59.1s (1.0min), best epoch 68
-Test RMSE: 1.0645  (published SchNet: ~1.05)
-Test MAE:  0.7335
+Conformer: single ETKDG, no MMFF
+Training: 85 epochs, 42.0s (0.7min), best epoch 35
+Test RMSE: 0.9929  (published SchNet: ~1.05)
+Test MAE:  0.7028
 ```
 
 ## File Structure
 ```
-src/data/conformer.py       — SMILES → 3D coords (RDKit ETKDG + MMFF)
+src/data/conformer.py       — SMILES → 3D coords (RDKit ETKDG, single conformer)
 src/data/data_loader.py     — CSV loading, preprocessing, SchNetMolDataset, DataLoader
 src/data/scaffold_split.py  — Bemis-Murcko scaffold split
 src/models/schnet_wrapper.py — SchNet + neighbor list + MLP head
@@ -141,21 +146,22 @@ configs/datasets/*.yaml     — Per-dataset config
 ```
 
 ## Run Commands
-```powershell
-# Preprocess (once)
+
+### Train trực tiếp
+```bash
 python scripts/preprocess_data.py --dataset all
-
-# Train single dataset
 python scripts/run_step1.py --dataset esol --gpu 1
+```
 
-# Train background (schtasks)
-schtasks /create /tn "CONAN_Step1" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONIOENCODING=utf-8 && python scripts/run_step1.py --dataset esol --gpu 1 >> logs\step1_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
+### Train ngầm (Windows schtasks)
+```powershell
+schtasks /create /tn "CONAN_Step1" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && python -u scripts/run_step1.py --dataset esol --gpu 1 >>logs\step1_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
 schtasks /run /tn "CONAN_Step1"
 
 # Monitor
 Get-Content logs\step1_esol.log -Wait -Tail 20
 
-# Stop
+# Stop / Delete
 schtasks /end /tn "CONAN_Step1"
 schtasks /delete /tn "CONAN_Step1" /f
 ```
@@ -175,8 +181,8 @@ schtasks /delete /tn "CONAN_Step1" /f
 
 ## Step 2 Transition Notes
 Step 2 sẽ thay SGD bằng EGGROLL:
-- Load best_model.pt từ Step 1 làm starting point
-- Freeze representation hoặc fine-tune toàn bộ
+- Train from scratch (random init) giống Step 1, chỉ thay optimizer
 - fitness_fn: -RMSE (higher is better) evaluated full-batch
 - EGGROLL config: N=32, r=16, sigma=0.01, lr=0.1
+- So sánh EGGROLL vs SGD trên cùng model architecture
 - Cần extract molecule embeddings cho GP (Step 3)

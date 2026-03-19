@@ -15,17 +15,18 @@ Compare three training paradigms on MoleculeNet benchmarks:
 
 | Dataset  | Task           | Metric | Published | Ours   | Status       |
 |----------|----------------|--------|-----------|--------|--------------|
-| ESOL     | Regression     | RMSE   | ~1.05     | 1.0645 | Done         |
+| ESOL     | Regression     | RMSE   | ~1.05     | 0.9929 | Done         |
 | FreeSolv | Regression     | RMSE   | ~1.50     |   —    | Ready to run |
 | Lipo     | Regression     | RMSE   | ~0.62     |   —    | Ready to run |
 | BACE     | Classification | AUC    | ~0.82     |   —    | Ready to run |
 
 Model: SchNet (464K params), 128-dim embeddings, 6 interaction blocks, cutoff 5.0A
+Conformer: single ETKDG conformer per molecule (no MMFF optimization), heavy atoms only
 
 ## Architecture
 
 ```
-SMILES → RDKit Conformer (ETKDG + MMFF94, heavy atoms only)
+SMILES → RDKit Conformer (single ETKDG, heavy atoms only)
        → (atomic_numbers, positions)
        → Neighbor list (on-the-fly, 5.0A cutoff)
        → SchNet representation (6 interaction blocks, 128-dim)
@@ -76,10 +77,7 @@ CONAN-SchNet/
 ## Setup
 
 ```bash
-# Environment (already set up on server)
 conda activate conan_es
-
-# Verify
 python scripts/check_env.py
 ```
 
@@ -100,15 +98,15 @@ python scripts/preprocess_data.py --dataset all
 ```
 
 ### Step 1: SchNet baseline
+
+Train trực tiếp:
 ```bash
 python scripts/run_step1.py --dataset esol --gpu 1
-python scripts/run_step1.py --dataset all --gpu 1
 ```
 
-### Background training (Windows schtasks)
+Train ngầm (Windows schtasks):
 ```powershell
-# Create and run
-schtasks /create /tn "CONAN_Step1" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONIOENCODING=utf-8 && python scripts/run_step1.py --dataset esol --gpu 1 >> logs\step1_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
+schtasks /create /tn "CONAN_Step1" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && python -u scripts/run_step1.py --dataset esol --gpu 1 >>logs\step1_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
 schtasks /run /tn "CONAN_Step1"
 
 # Monitor / Stop / Delete
@@ -119,7 +117,7 @@ schtasks /delete /tn "CONAN_Step1" /f
 
 ## Key Libraries
 - **schnetpack 2.1.1**: SchNet model
-- **RDKit 2025.09.6**: Conformer generation (ETKDG + MMFF94)
+- **RDKit 2025.09.6**: Conformer generation (single ETKDG)
 - **EvoGP 0.1.0**: GPU-accelerated GP evolution
 - **EGGROLL**: Custom ES optimizer (src/optimizers/eggroll.py)
 
