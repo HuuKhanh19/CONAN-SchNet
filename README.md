@@ -13,21 +13,21 @@ Compare three training paradigms on MoleculeNet benchmarks:
 
 ### Step 1: SchNet SGD Baseline
 
-| Dataset  | Task           | Metric | Published | Ours   | Status       |
-|----------|----------------|--------|-----------|--------|--------------|
-| ESOL     | Regression     | RMSE   | ~1.05     | 0.9929 | Done         |
-| FreeSolv | Regression     | RMSE   | ~1.50     |   —    | Ready to run |
-| Lipo     | Regression     | RMSE   | ~0.62     |   —    | Ready to run |
-| BACE     | Classification | AUC    | ~0.82     |   —    | Ready to run |
+| Dataset  | Task           | Metric | Published | Ours       | Status         |
+|----------|----------------|--------|-----------|------------|----------------|
+| ESOL     | Regression     | RMSE   | ~1.05     | 1.06±0.04  | Done (5 runs)  |
+| FreeSolv | Regression     | RMSE   | ~1.50     |   —        | Ready to run   |
+| Lipo     | Regression     | RMSE   | ~0.62     |   —        | Ready to run   |
+| BACE     | Classification | AUC    | ~0.82     |   —        | Ready to run   |
 
 ### Step 2: SchNet + EGGROLL
 
-| Dataset  | Task       | Metric | Step 1 (SGD) | Step 2 (EGGROLL) | Status       |
-|----------|------------|--------|--------------|------------------|--------------|
-| ESOL     | Regression | RMSE   | 0.9929       | 1.1500           | Done         |
-| FreeSolv | Regression | RMSE   | —            | —                | Ready to run |
-| Lipo     | Regression | RMSE   | —            | —                | Ready to run |
-| BACE     | Classification | AUC | —            | —                | Ready to run |
+| Dataset  | Task           | Metric | Step 1 (SGD) | Step 2 (EGGROLL) | Status       |
+|----------|----------------|--------|--------------|------------------|--------------|
+| ESOL     | Regression     | RMSE   | 1.06±0.04    | 1.1500           | Done         |
+| FreeSolv | Regression     | RMSE   | —            | —                | Ready to run |
+| Lipo     | Regression     | RMSE   | —            | —                | Ready to run |
+| BACE     | Classification | AUC    | —            | —                | Ready to run |
 
 **ESOL Step 2 Details:**
 - Config: N=32, r=4 (Nr=128), sigma=0.01, lr=0.1, lr_decay/sigma_decay=0.99
@@ -38,11 +38,11 @@ Compare three training paradigms on MoleculeNet benchmarks:
 
 ### Comparison (ESOL)
 
-| Method        | Test RMSE | Test MAE | Time   | Best Epoch/Gen |
-|---------------|-----------|----------|--------|----------------|
-| Step 1 (SGD)  | 0.9929    | 0.7028   | 42s    | Epoch 35/300   |
-| Step 2 (EGGROLL) | 1.1500 | 0.8516   | 62 min | Gen 300/400    |
-| Published SchNet | ~1.05  | —        | —      | —              |
+| Method           | Test RMSE  | Test MAE | Time   | Best Epoch/Gen |
+|------------------|------------|----------|--------|----------------|
+| Step 1 (SGD)     | 1.06±0.04  | —        | ~42s   | Epoch ~35/300  |
+| Step 2 (EGGROLL) | 1.1500     | 0.8516   | 62 min | Gen 300/400    |
+| Published SchNet | ~1.05      | —        | —      | —              |
 
 Model: SchNet (464K params), 128-dim embeddings, 6 interaction blocks, cutoff 5.0Å
 Conformer: single ETKDG conformer per molecule (no MMFF optimization), heavy atoms only
@@ -140,7 +140,7 @@ schtasks /create /tn "CONAN_Step1" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\Drug
 schtasks /run /tn "CONAN_Step1"
 
 # Step 2
-schtasks /create /tn "CONAN_Step2_0” /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && python -u scripts/run_step2.py --dataset esol --gpu 0 >>logs\step2_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f 
+schtasks /create /tn "CONAN_Step2" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && set PYTHONIOENCODING=utf-8 && python -u scripts/run_step2.py --dataset esol --gpu 1 >>logs\step2_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
 schtasks /run /tn "CONAN_Step2"
 
 # Monitor / Stop / Delete

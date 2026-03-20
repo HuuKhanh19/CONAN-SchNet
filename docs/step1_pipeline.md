@@ -123,13 +123,20 @@ training:
 - Regression: RMSE, MAE
 - Classification: AUC (ROC)
 
-## Results (ESOL)
+## Results (ESOL, 5 runs)
 ```
 Model: 464,129 params
 Conformer: single ETKDG, no MMFF
-Training: 85 epochs, 42.0s (0.7min), best epoch 35
-Test RMSE: 0.9929  (published SchNet: ~1.05)
-Test MAE:  0.7028
+
+Run 1: RMSE=1.1064, MAE=0.7674 (best epoch 33, 41s)
+Run 2: RMSE=1.0178, MAE=0.6712 (best epoch 31, 40s)
+Run 3: RMSE=1.0133, MAE=0.6965 (best epoch 54, 107s)
+Run 4: RMSE=1.0519, MAE=0.7527 (best epoch 27, 45s)
+Run 5: RMSE=1.1132, MAE=0.7767 (best epoch 41, 52s)
+
+Average: RMSE=1.0605±0.04, MAE=0.7329±0.04
+Best:    RMSE=1.0133, MAE=0.6965
+Published SchNet: ~1.05
 ```
 
 ## File Structure
