@@ -191,17 +191,17 @@ Gen 400: train_fitness=-0.89, val_rmse=1.07
 
 | Metric    | Step 1 (SGD) | Step 2 (EGGROLL) | Gap    |
 |-----------|-------------|------------------|--------|
-| Test RMSE | 0.9929      | 1.1500           | +0.157 |
-| Test MAE  | 0.7028      | 0.8516           | +0.149 |
-| Time      | 42s         | 62 min           | ~89×   |
-| Best iter | Epoch 35    | Gen 300          |        |
+| Test RMSE | 1.06±0.04   | 1.1500           | +0.09  |
+| Test MAE  | —           | 0.8516           | —      |
+| Time      | ~42s        | 62 min           | ~89×   |
+| Best iter | Epoch ~35   | Gen 300          |        |
 
 **Observations:**
-- EGGROLL achieves reasonable results (~1.15 RMSE) but ~16% worse than SGD
+- EGGROLL achieves reasonable results (~1.15 RMSE) but ~9% worse than SGD avg
 - Training is ~89× slower due to N forward passes per generation
 - Fitness still improving at gen 400 (no plateau) — more generations may help
 - EGGROLL's advantage is being gradient-free: no backprop needed, can optimize non-differentiable objectives
-- This baseline comparison is fair: same architecture, same random init, same data
+- Fair comparison: same architecture, same random init, same data
 
 ## File Structure
 
@@ -258,12 +258,15 @@ lr and sigma decay by 0.99 per generation. After 400 gen:
 - Learning rate reduces 55×, fine-tuning in later generations
 
 ## Step 3 Transition Notes
-Step 3 sẽ thay MLP head bằng GP head:
-- Freeze SchNet representation (from Step 2 best model or random init)
-- Replace MLP head with Multi-Gene GP + OLS
-- EGGROLL trains SchNet backbone, GP evolves symbolic head
-- Cần extract molecule embeddings (128-dim) cho GP input
-- EvoGP handles GP evolution on GPU
+Step 3 thay MLP head bằng GP head, dùng co-evolution:
+- Load Step 1 pretrained backbone (representation only, loại MLP head)
+- Single GP tree (EvoGP on GPU): max_tree_len=127, max_layer_cnt=7, input_len=128
+- EGGROLL perturbs backbone only → N1 embeddings
+- GP evaluates N2 trees trên mỗi embedding → fitness matrix N1×N2
+- Both populations use mean fitness for selection/update
+- Elitism giữ best backbone state + best GP tree
+- Dùng EGGROLL internal methods (_sample_perturbations, _apply/_remove_perturbation) để access embeddings
+- EvoGP: GeneticProgramming.step(fitness) handles crossover/mutation/selection
 
 ## Known Compatibility Notes
 - Windows cp1252 encoding: use PYTHONIOENCODING=utf-8 for sigma (σ) in logs

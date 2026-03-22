@@ -7,7 +7,7 @@ Molecular Property Prediction: SchNet + EGGROLL + GP
 Compare three training paradigms on MoleculeNet benchmarks:
 - **Step 1**: SchNet baseline (SGD) — reproduce published results
 - **Step 2**: Replace SGD with EGGROLL (Evolution Strategies with Low-Rank Perturbations)
-- **Step 3**: Replace MLP head with GP head (Multi-Gene GP + OLS), train end-to-end
+- **Step 3**: Co-evolution EGGROLL (backbone) + GP (head), train end-to-end
 
 ## Results
 
@@ -36,12 +36,26 @@ Compare three training paradigms on MoleculeNet benchmarks:
 - Train fitness converged: -2.04 → -0.89 (= train RMSE 2.04 → 0.89)
 - Val RMSE: 1.97 → 1.04 (best at gen 300)
 
+### Step 3: Co-evolution EGGROLL + GP (Planned)
+
+| Dataset  | Task       | Metric | Step 1 | Step 2 | Step 3 | Status  |
+|----------|------------|--------|--------|--------|--------|---------|
+| ESOL     | Regression | RMSE   | 1.06±0.04 | 1.1500 | —   | TODO    |
+
+**Design:**
+- Load Step 1 pretrained backbone → remove MLP head
+- GP head: single tree (EvoGP on GPU), input_len=128, max_tree_len=127
+- Co-evolution: EGGROLL perturbs backbone, GP evolves head
+- Fitness matrix N1×N2 → mean aggregation for both populations
+- Elitism for both EGGROLL backbone and GP trees
+
 ### Comparison (ESOL)
 
 | Method           | Test RMSE  | Test MAE | Time   | Best Epoch/Gen |
 |------------------|------------|----------|--------|----------------|
 | Step 1 (SGD)     | 1.06±0.04  | —        | ~42s   | Epoch ~35/300  |
 | Step 2 (EGGROLL) | 1.1500     | 0.8516   | 62 min | Gen 300/400    |
+| Step 3 (EGGROLL+GP) | —       | —        | —      | —              |
 | Published SchNet | ~1.05      | —        | —      | —              |
 
 Model: SchNet (464K params), 128-dim embeddings, 6 interaction blocks, cutoff 5.0Å
@@ -49,13 +63,22 @@ Conformer: single ETKDG conformer per molecule (no MMFF optimization), heavy ato
 
 ## Architecture
 
+### Step 1 & 2: SchNet + MLP Head
 ```
 SMILES → RDKit Conformer (single ETKDG, heavy atoms only)
        → (atomic_numbers, positions)
        → Neighbor list (on-the-fly, 5.0Å cutoff)
        → SchNet representation (6 interaction blocks, 128-dim)
        → Per-atom features → Sum pooling → Molecule embedding (128-dim)
-       → Prediction head (MLP 128→128→1 or GP)
+       → MLP Head (128→128→1)
+       → Property prediction
+```
+
+### Step 3: SchNet + GP Head
+```
+SMILES → RDKit Conformer → SchNet Backbone (pretrained Step 1)
+       → Molecule embedding (128-dim)
+       → GP Tree (single tree, EvoGP on GPU)
        → Property prediction
 ```
 
@@ -83,15 +106,16 @@ CONAN-SchNet/
 │   ├── models/
 │   │   └── schnet_wrapper.py  # SchNet + neighbor list + MLP head
 │   ├── optimizers/
-│   │   └── eggroll.py         # EGGROLL ES optimizer (Step 2)
+│   │   └── eggroll.py         # EGGROLL ES optimizer
 │   └── trainers/
 │       ├── step1_trainer.py   # SGD trainer (Adam + early stopping)
-│       └── step2_trainer.py   # EGGROLL trainer (ES + early stopping)
+│       ├── step2_trainer.py   # EGGROLL trainer (ES + early stopping)
+│       └── step3_trainer.py   # Co-evolution EGGROLL + GP trainer
 ├── scripts/
 │   ├── preprocess_data.py     # Raw CSV → scaffold split
 │   ├── run_step1.py           # Step 1 entry point
 │   ├── run_step2.py           # Step 2 entry point
-│   ├── run_step3.py           # Step 3 placeholder
+│   ├── run_step3.py           # Step 3 entry point
 │   └── check_env.py           # Environment verification
 ├── experiments/               # Training outputs (checkpoints, results)
 ├── logs/                      # Background training logs
@@ -133,12 +157,13 @@ python scripts/run_step1.py --dataset esol --gpu 1
 python scripts/run_step2.py --dataset esol --gpu 1
 ```
 
+### Step 3: SchNet + EGGROLL + GP
+```bash
+python scripts/run_step3.py --dataset esol --gpu 1 --pretrained experiments/step1_esol_XXXXXXXX/best_model.pt
+```
+
 ### Background training (Windows schtasks)
 ```powershell
-# Step 1
-schtasks /create /tn "CONAN_Step1" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && python -u scripts/run_step1.py --dataset esol --gpu 1 >>logs\step1_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
-schtasks /run /tn "CONAN_Step1"
-
 # Step 2
 schtasks /create /tn "CONAN_Step2" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && set PYTHONIOENCODING=utf-8 && python -u scripts/run_step2.py --dataset esol --gpu 1 >>logs\step2_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
 schtasks /run /tn "CONAN_Step2"
