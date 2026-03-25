@@ -1,7 +1,7 @@
 """Data loading and preprocessing module."""
 
 from .scaffold_split import scaffold_split_dataframe, generate_scaffold_split
-from .conformer import smiles_to_3d, batch_smiles_to_3d
+from .conformer import inner_smi2coords
 from .data_loader import (
     prepare_dataset,
     save_splits,

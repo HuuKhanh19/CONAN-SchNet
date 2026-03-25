@@ -222,11 +222,11 @@ python scripts/run_step2.py --dataset esol --gpu 1
 
 ### Train ngầm (Windows schtasks)
 ```powershell
-schtasks /create /tn "CONAN_Step2" /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && set PYTHONIOENCODING=utf-8 && python -u scripts/run_step2.py --dataset esol --gpu 1 >>logs\step2_esol.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
-schtasks /run /tn "CONAN_Step2"
+schtasks /create /tn "CONAN_Step2_0” /tr "cmd /c cd /d C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet && C:\ProgramData\miniconda3\condabin\conda.bat activate conan_es && set PYTHONUNBUFFERED=1 && python -u scripts/run_step2.py --dataset esol --gpu 0 >>logs\step2_esol_v1.log 2>&1" /sc once /st 00:00 /ru BKAI /rl highest /f
+schtasks /run /tn "CONAN_Step2_0”
 
 # Monitor
-Get-Content logs\step2_esol.log -Wait -Tail 20
+Get-Content logs\step2_esol_v1.log -Wait -Tail 20
 
 # Stop / Delete
 schtasks /end /tn "CONAN_Step2"

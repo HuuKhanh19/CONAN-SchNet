@@ -149,6 +149,18 @@ class Step1Trainer:
               f"batch_size: {self.config['training']['batch_size']}")
         print("-" * 70)
 
+        # Data loader check
+        print("\nData Loader Check:")
+        # Lấy ra batch đầu tiên
+        sample_batch = next(iter(train_loader))
+        
+        # In ra cấu trúc và kích thước của từng tensor trong batch
+        for key, value in sample_batch.items():
+            # In tên key và kích thước (shape)
+            print(f"Key: '{key:<15}' | Shape: {value.shape} | Kiểu dữ liệu: {value.dtype}")
+            print(value)
+        print("=================================================\n")
+            
         start_time = time.time()
 
         for epoch in range(1, self.epochs + 1):

@@ -13,8 +13,8 @@ from torch.utils.data import Dataset, DataLoader
 from typing import Dict, Any, Optional, Tuple, List
 
 from .scaffold_split import scaffold_split_dataframe
-from .conformer import smiles_to_3d, batch_smiles_to_3d
-
+from .splitter import random_split, random_scaffold_split
+from .conformer import inner_smi2coords
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -100,7 +100,7 @@ def preprocess_dataframe(
     df: pd.DataFrame,
     smiles_column: str,
     target_column: str,
-    task_type: str,
+    task_type: str
 ) -> pd.DataFrame:
     df = df.copy()
     initial = len(df)
@@ -138,6 +138,7 @@ def prepare_dataset(
     base_config_path: str = "configs/base.yaml",
     dataset_config_dir: str = "configs/datasets",
     random_seed: int = 42,
+    split_type: str = "random_scaffold"
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
     base_config = load_config(base_config_path)
     ds_config = load_config(os.path.join(dataset_config_dir, f"{dataset_name}.yaml"))
@@ -169,11 +170,15 @@ def prepare_dataset(
     print(f"After preprocessing: {len(df)} molecules")
 
     sr = config['data']['split_ratio']
-    train_df, valid_df, test_df = scaffold_split_dataframe(
-        df, smiles_column='smiles',
-        frac_train=sr[0], frac_valid=sr[1], frac_test=sr[2],
-        random_seed=random_seed,
-    )
+    # train_df, valid_df, test_df = scaffold_split_dataframe(
+    #     df, smiles_column='smiles',
+    #     frac_train=sr[0], frac_valid=sr[1], frac_test=sr[2],
+    #     random_seed=random_seed,
+    # )
+    if split_type=="random":
+        train_df, valid_df, test_df = random_split(df, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed)
+    elif split_type=="random_scaffold":
+        train_df, valid_df, test_df = random_scaffold_split(df, df['smiles'].values, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed, dataframe=True)
     print(f"Split: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
     config['dataset']['smiles_column'] = 'smiles'
@@ -220,12 +225,26 @@ class SchNetMolDataset(Dataset):
             self.positions = cache['positions']
         else:
             print(f"  Generating conformers for {len(self.smiles)} molecules...")
-            self.atomic_numbers, self.positions, failed = batch_smiles_to_3d(
-                self.smiles,
-                num_conformers=num_conformers,
-                optimize_mmff=optimize_mmff,
-                random_seed=random_seed,
-            )
+            from rdkit.Chem import GetPeriodicTable
+            pt = GetPeriodicTable()
+            self.atomic_numbers, self.positions = [], []
+            for i, smi in enumerate(self.smiles):
+                atoms_list, coords_list = inner_smi2coords(
+                    smi, seed=random_seed, mode='fast',
+                    optimize=optimize_mmff, n_confs=num_conformers,
+                )
+                if atoms_list[0] is None or len(atoms_list[0]) == 0:
+                    self.atomic_numbers.append(None)
+                    self.positions.append(None)
+                else:
+                    self.atomic_numbers.append(
+                        np.array([pt.GetAtomicNumber(s) for s in atoms_list[0]], dtype=np.int64)
+                    )
+                    self.positions.append(coords_list[0])  # best conformer (lowest energy)
+                if (i + 1) % 100 == 0:
+                    print(f"  Conformer generation: {i+1}/{len(self.smiles)}")
+            failed = None  # không cần track riêng, filter ở bước dưới
+            
             if cache_path:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 with open(cache_path, 'wb') as f:

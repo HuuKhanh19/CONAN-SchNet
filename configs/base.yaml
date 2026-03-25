@@ -5,7 +5,7 @@ data:
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
   split_method: "scaffold"
-  random_seed: 42
+  random_seed: 0
 
 # SchNet model settings
 schnet:
@@ -18,17 +18,17 @@ schnet:
 
 # Conformer generation
 conformer:
-  num_conformers: 1        # Single ETKDG conformer per molecule
+  num_conformers: 5        # Single ETKDG conformer per molecule
   max_attempts: 500        # Max ETKDG attempts
-  prune_rms_thresh: 0.5    # RMSD threshold for pruning
+  prune_rms_thresh: 0.0    # RMSD threshold for pruning
   use_random_coords: false
-  optimize_mmff: false      # No MMFF optimization
+  optimize_mmff: true      # No MMFF optimization
 
 # Training settings (Step 1 - SGD baseline)
 training:
   epochs: 300
   batch_size: 32
-  learning_rate: 0.0005
+  learning_rate: 0.001
   weight_decay: 0.00001
   scheduler: "reduce_on_plateau"
   scheduler_patience: 25
@@ -37,7 +37,7 @@ training:
   save_checkpoints: true
   gradient_clip: 1.0
 
-# EGGROLL settings (Step 2)
+# EGGROLL settings (Step 2 & Step 3 backbone)
 eggroll:
   population_size: 32
   rank: 4
@@ -54,15 +54,35 @@ eggroll:
   patience: 150
   eval_every: 5
 
-# GP settings (Step 3)
+# GP settings (Step 3 - symbolic head)
 gp:
-  population_size: 50
-  max_depth: 4
-  tournament_size: 5
-  crossover_prob: 0.8
-  mutation_prob: 0.2
-  elitism: 3
+  population_size: 200       # N2 = number of GP trees
+  max_tree_len: 63          # 2^5 - 1, for max_layer_cnt=5 (FIX 2: reduced)
+  max_layer_cnt: 6          # Moderate depth to prevent overfitting
+  layer_leaf_prob: 0.3
   input_dim: 128            # SchNet embedding dimension
+  output_dim: 1
+  using_funcs:              # FIX 3: No exp — causes Inf explosions
+    - '+'
+    - '-'
+    - '*'
+    - 'loose_div'
+    - 'sin'
+    - 'cos'
+    - 'neg'
+    - 'abs'
+    - 'tanh'
+    - 'loose_sqrt'
+  const_range: [-1.0, 1.0]
+  sample_cnt: 1000
+  crossover_rate: 0.8
+  mutation_rate: 0.2
+  tournament_size: 5
+  elitism: 3
+
+# Step 3 specific settings
+step3:
+  warmup_generations: 50    # FIX 4: GP-only warmup before co-evolution
 
 # Experiment settings
 experiment:

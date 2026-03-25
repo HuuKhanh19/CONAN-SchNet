@@ -92,6 +92,7 @@ def run_step1(dataset_name: str, gpu: int = 0, config_dir: str = "configs"):
         device=device,
         experiment_dir=exp_dir,
     )
+    print(f"Data frame Train:\n{train_df}")
     results = trainer.train(train_loader, valid_loader, test_loader)
 
     print(f"\nResults saved to: {exp_dir}")
@@ -105,9 +106,13 @@ def main():
     parser.add_argument('--gpu', type=int, default=0,
                         help='GPU index (-1 for CPU)')
     parser.add_argument('--config-dir', type=str, default='configs')
+    parser.add_argument('--random_seed', type=int, default='configs')
     args = parser.parse_args()
 
     os.chdir(project_root)
+
+    # print(f"Project root: {project_root}")
+    # print(f"Arguments: {args}")
 
     datasets = DATASETS if args.dataset == 'all' else [args.dataset]
 
