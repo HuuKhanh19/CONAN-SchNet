@@ -118,10 +118,11 @@ class ConformerGen(object):
         :raises ValueError: If the conformer generation method is unrecognized.
         """
         if self.method == 'rdkit_random':
-            atoms, coordinates = inner_smi2coords(
-                smiles, seed=self.seed, mode=self.mode, n_confs=self.n_confomer
+            atoms, coordinates, energies  = inner_smi2coords(
+                smiles, seed=self.seed, mode=self.mode, n_confs=self.n_confomer,return_energy=True
             )
             # print(1)
+            # print(atoms, coordinates)
 
 
             feat = coords2unimol(
@@ -133,6 +134,12 @@ class ConformerGen(object):
                 seed=self.seed
             )
             # print(2)
+            for i in range(min(len(feat), len(energies))):
+                feat[i]['energy'] = float(energies[i])
+
+            # nếu thiếu conformer vì fail, vẫn an toàn
+            for i in range(len(energies), len(feat)):
+                feat[i]['energy'] = float('inf')
             return feat
         else:
             raise ValueError(
@@ -175,9 +182,7 @@ class ConformerGen(object):
         logger.info('Start generating conformers...')
         if self.multi_process:
             pool = Pool(processes=min(8, os.cpu_count()))
-            results = [
-                item for item in tqdm(pool.imap(self.single_process, smiles_list))
-            ]
+            results = [item for item in tqdm(pool.imap(self.single_process, smiles_list))]
             pool.close()
         else:
             results = [self.single_process(smiles) for smiles in tqdm(smiles_list)]
@@ -191,16 +196,13 @@ class ConformerGen(object):
                 (1 - np.mean(failed_conf)) * 100
             )
         )
-        failed_conf_indices = [
-            index for index, value in enumerate(failed_conf) if value
-        ]
+
+        k = self.n_confomer
+        failed_conf_indices = [i for i, v in enumerate(failed_conf) if v]
         if len(failed_conf_indices) > 0:
-            logger.info('Failed conformers indices: {}'.format(failed_conf_indices))
-            logger.debug(
-                'Failed conformers SMILES: {}'.format(
-                    [smiles_list[index] for index in failed_conf_indices]
-                )
-            )
+            failed_mol_idx = sorted(set(i // k for i in failed_conf_indices))
+            logger.info('Failed conformers indices: {}'.format(failed_conf_indices[:50]))
+            logger.debug('Failed conformers SMILES: {}'.format([smiles_list[i] for i in failed_mol_idx[:50]]))
 
         failed_conf_3d = [(item['src_coord'][:, 2] == 0.0).all() for item in inputs]
         logger.info(
@@ -208,18 +210,13 @@ class ConformerGen(object):
                 (1 - np.mean(failed_conf_3d)) * 100
             )
         )
-        failed_conf_3d_indices = [
-            index for index, value in enumerate(failed_conf_3d) if value
-        ]
+
+        failed_conf_3d_indices = [i for i, v in enumerate(failed_conf_3d) if v]
         if len(failed_conf_3d_indices) > 0:
-            logger.info(
-                'Failed 3d conformers indices: {}'.format(failed_conf_3d_indices)
-            )
-            logger.debug(
-                'Failed 3d conformers SMILES: {}'.format(
-                    [smiles_list[index] for index in failed_conf_3d_indices]
-                )
-            )
+            failed_mol_idx_3d = sorted(set(i // k for i in failed_conf_3d_indices))
+            logger.info('Failed 3d conformers indices: {}'.format(failed_conf_3d_indices[:50]))
+            logger.debug('Failed 3d conformers SMILES: {}'.format([smiles_list[i] for i in failed_mol_idx_3d[:50]]))
+
         return inputs, mols
 
 def _minimize_energy(mol, conf_id=0):
@@ -238,7 +235,7 @@ def _minimize_energy(mol, conf_id=0):
         return np.inf
 
 def inner_smi2coords(
-    smi, seed=42, mode='fast', optimize=True, n_confs=3, prune_conf=False, return_2d=False
+    smi, seed=42, mode='fast', optimize=True, n_confs=3, prune_conf=False, return_2d=False, return_energy=False
 ):
     """
     Robust SMILES->3D coords:
@@ -274,6 +271,7 @@ def inner_smi2coords(
         return [None], [None]
     
     if len(work_mol.GetAtoms()) > 400 or return_2d:
+        print("large")
         # return 2D coords for very large molecules
         orig_atoms = [a.GetSymbol() for a in work_mol.GetAtoms()]
         keep_idx = [i for i, sym in enumerate(orig_atoms) if sym != '*']
@@ -360,21 +358,26 @@ def inner_smi2coords(
         # Final fallback: zeros
         coords = np.zeros((work_mol.GetNumAtoms(), 3), dtype=np.float32)
         all_confs_coords.append(coords)
+        all_energies.append(np.inf)
     
     
     # Make sure shape matches: coordinates array should be at least the original core atoms count.
     all_confs_coords_new = []
-    for coords in all_confs_coords:
-        # Remove original dummy ('*') atoms from output (ALWAYS)
+    all_energies_new = []
+    for coords, e in zip(all_confs_coords, all_energies):
         coordinates = coords[keep_idx]
-        
-        # Sanity check
         assert len(atoms) == len(coordinates), "coordinates shape is not align with {}".format(smi)
         all_confs_coords_new.append(coordinates)
-    
-    # Remove original dummy ('*') atoms from output (ALWAYS)
+        all_energies_new.append(e)
     
     assert len(atoms) == len(all_confs_coords_new[0]), "coordinates shape is not align with {}".format(smi)
+    if return_energy:
+        # (optional) đổi sang ΔE theo molecule để dùng weighting ổn hơn
+        arr = np.array(all_energies_new, dtype=float)
+        if np.isfinite(arr).any():
+            arr = arr - np.nanmin(arr)
+        return [atoms], all_confs_coords_new, arr.tolist()
+
     return [atoms], all_confs_coords_new
 
 def inner_coords(atoms, coordinates, remove_hs=True):
@@ -485,6 +488,7 @@ def coords2unimol(
             'src_coord': src_coord.astype(np.float32),
             'src_edge_type': src_edge_type.astype(int),
         })
+
 
     return outputs
 

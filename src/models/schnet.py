@@ -28,10 +28,11 @@ class SchNet(torch.nn.Module):
         num_filters: int = 128,
         num_interactions: int = 6,
         num_gaussians: int = 50,
-        cutoff: int = 10.0,
+        cutoff: int = 10.0, 
         max_num_neighbors: int = 32,
         readout: str = 'add',
         scale: Optional[float] = None,
+        task_type: str = "regression"
     ):
         super().__init__()
 
@@ -66,6 +67,7 @@ class SchNet(torch.nn.Module):
         self.act = ShiftedSoftplus()
         self.lin2 = Linear(hidden_channels // 2, out_channels)
         
+        self.task_type = task_type
         if task_type == "classification":
             self.sigmoid = nn.Sigmoid()
         else:
@@ -83,9 +85,39 @@ class SchNet(torch.nn.Module):
         torch.nn.init.xavier_uniform_(self.lin2.weight)
         self.lin2.bias.data.fill_(0)
 
-    def forward(self, z: Tensor, pos: Tensor,
-                batch: OptTensor = None) -> Tensor:
-        batch = torch.zeros_like(z) if batch is None else batch
+    # def forward(self, z: Tensor, pos: Tensor,
+    #             batch: OptTensor = None) -> Tensor:
+    #     batch = torch.zeros_like(z) if batch is None else batch
+
+    #     h = self.embedding(z)
+    #     edge_index, edge_weight = self.interaction_graph(pos, batch)
+    #     edge_attr = self.distance_expansion(edge_weight)
+
+    #     for interaction in self.interactions:
+    #         inter = interaction(h, edge_index, edge_weight, edge_attr)
+    #         h = h + inter
+
+    #     h = self.lin1(h)
+    #     h = self.act(h)
+    #     h = self.lin2(h)
+        
+    #     out = self.readout(h, batch, dim=0)
+    #     out = self.sigmoid(out)
+
+
+    #     if self.scale is not None:
+    #         out = out * self.scale
+
+    #     return out
+
+    def forward(
+            self,
+            inputs: Dict[str, Tensor],
+            return_embedding: bool = False
+        ) -> Dict[str, Tensor]:
+        z = inputs['_atomic_numbers']
+        pos = inputs['_positions']
+        batch = inputs['_idx_m']
 
         h = self.embedding(z)
         edge_index, edge_weight = self.interaction_graph(pos, batch)
@@ -94,19 +126,24 @@ class SchNet(torch.nn.Module):
         for interaction in self.interactions:
             inter = interaction(h, edge_index, edge_weight, edge_attr)
             h = h + inter
-
-        h = self.lin1(h)
-        h = self.act(h)
-        h = self.lin2(h)
         
-        out = self.readout(h, batch, dim=0)
-        out = self.sigmoid(out)
+        # molecule_embedding
+        mol_embedding = self.readout(h, batch, dim=0)  # (batch_size, hidden_channels)
 
+        out = self.lin1(mol_embedding)
+        out = self.act(out)
+        out = self.lin2(out)
+        out = self.sigmoid(out)
+        out = out.squeeze(-1)  # (batch_size,)
 
         if self.scale is not None:
             out = out * self.scale
 
-        return out
+        result = {'prediction': out}
+        if return_embedding:
+            result['embedding'] = mol_embedding.detach()
+
+        return result
 
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}('
@@ -115,6 +152,23 @@ class SchNet(torch.nn.Module):
                 f'num_interactions={self.num_interactions}, '
                 f'num_gaussians={self.num_gaussians}, '
                 f'cutoff={self.cutoff})')
+    
+    def get_embedding(self, inputs: Dict[str, Tensor]) -> Tensor:
+        with torch.no_grad():
+            out = self.forward(inputs, return_embedding=True)
+        return out['embedding']
+
+    @property
+    def embedding_dim(self) -> int:
+        return self.hidden_channels
+
+    @property
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+    @property
+    def num_trainable_params(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
 class RadiusInteractionGraph(torch.nn.Module):
@@ -232,31 +286,18 @@ class ShiftedSoftplus(torch.nn.Module):
     
     
 
-def build_schnet_model(config: Dict) -> SchNetWrapper:
-    """Build SchNet model from config."""
+def build_schnet_model(config: Dict) -> SchNet:
     schnet_cfg = config.get('schnet', {})
-    training_cfg = config.get('training', {})
-
     model = SchNet(
-        # n_atom_basis=schnet_cfg.get('n_atom_basis', 128),
-        # n_interactions=schnet_cfg.get('n_interactions', 6),
-        # n_rbf=schnet_cfg.get('n_rbf', 50),
-        # cutoff=schnet_cfg.get('cutoff', 5.0),
-        # n_filters=schnet_cfg.get('n_filters', 128),
-        # task_type=config['dataset']['task_type'],
-        # pool="sum",
-        # head_hidden=schnet_cfg.get('n_atom_basis', 128),
-        # head_layers=2,
-        # dropout=0.0,
-        
-        hidden_channels = 128,
-        out_channels = 1,
-        num_filters = 128,
-        num_interactions = 6,
-        num_gaussians = 50,
-        cutoff = 10.0,
-        max_num_neighbors = 32,
-        readout = 'add',
-        scale = None,
+        hidden_channels=schnet_cfg.get('n_atom_basis', 128),
+        out_channels=1,
+        num_filters=schnet_cfg.get('n_filters', 128),
+        num_interactions=schnet_cfg.get('n_interactions', 6),
+        num_gaussians=schnet_cfg.get('n_rbf', 50),
+        cutoff=schnet_cfg.get('cutoff', 10.0),
+        max_num_neighbors=32,
+        readout='add',
+        scale=None,
+        task_type=config['dataset']['task_type'],
     )
     return model

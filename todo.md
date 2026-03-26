@@ -1,7 +1,22 @@
 1. Adapt conformer generation code from Uni-Mol to this code #                          C:\Users\BKAI\ducluong\DrugOptimization\Uni-Mol\unimol_tools\unimol_tools\data\conformer.py
 
+- paste conformer.py của unimol vào conformer hiện tại 
+- fix import của conformer, src/data/__init__, dataloader
+- fix dataloader.py: SchNetMolDataset.__init__: batch_smiles_to_3d -> inner_smi2coords
+    
+
 2. Moving config setting to argparser (or keep using config.yaml, but change to use hydra library)
 https://github.com/facebookresearch/hydra
+
+- install: pip install hydra-core omegaconf
+- Tái cấu trúc config thành 1 file base.yaml duy nhất
+- delete hàm load_config và merge_configs của dataloader
+- fix các hàm con load config trực tiếp từ base.yaml
+- fix import của src/data/__init__
+- fix hàm main dùng thư viện hydra: truyền config từ base.yaml vào biến cfg
+    @hydra.main(version_base=None, config_path="../configs", config_name="base")
+    def main(cfg: DictConfig):
+
 
 3. Ensure that when setting num_conformer > 1, model returns output embedding shape: num_conformer x num_atom x hidden_dim / num_conformer x hidden_dim
 batch all conformers of 1 molecule at the same time, code of dataloader 

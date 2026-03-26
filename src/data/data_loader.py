@@ -7,40 +7,12 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-import yaml
 import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Dict, Any, Optional, Tuple, List
 
-from .scaffold_split import scaffold_split_dataframe
 from .splitter import random_split, random_scaffold_split
 from .conformer import inner_smi2coords
-
-# ---------------------------------------------------------------------------
-# Config helpers
-# ---------------------------------------------------------------------------
-
-def load_config(config_path: str) -> Dict[str, Any]:
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
-
-
-def merge_configs(base: Dict, override: Dict) -> Dict:
-    merged = {}
-    for k, v in base.items():
-        if isinstance(v, dict) and k in override and isinstance(override[k], dict):
-            merged[k] = merge_configs(v, override[k])
-        else:
-            merged[k] = v
-    for k, v in override.items():
-        if k not in merged:
-            merged[k] = v
-        elif isinstance(v, dict) and isinstance(merged.get(k), dict):
-            pass  # already handled
-        else:
-            merged[k] = v
-    return merged
-
 
 # ---------------------------------------------------------------------------
 # Column detection
@@ -133,16 +105,10 @@ def preprocess_dataframe(
 # High-level pipeline
 # ---------------------------------------------------------------------------
 
-def prepare_dataset(
-    dataset_name: str,
-    base_config_path: str = "configs/base.yaml",
-    dataset_config_dir: str = "configs/datasets",
-    random_seed: int = 42,
-    split_type: str = "random_scaffold"
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
-    base_config = load_config(base_config_path)
-    ds_config = load_config(os.path.join(dataset_config_dir, f"{dataset_name}.yaml"))
-    config = merge_configs(base_config, ds_config)
+def prepare_dataset(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
+    random_seed_split = config['data']['random_seed_split']
+    split_type = config['data']['split_method']
+    print(f"Preparing dataset with split method: {split_type}, random_seed: {random_seed_split}")
 
     raw_dir = config['data']['raw_dir']
     filename = config['dataset']['file']
@@ -169,24 +135,18 @@ def prepare_dataset(
     df = preprocess_dataframe(df, smiles_col, target_col, task_type)
     print(f"After preprocessing: {len(df)} molecules")
 
-    sr = config['data']['split_ratio']
-    # train_df, valid_df, test_df = scaffold_split_dataframe(
-    #     df, smiles_column='smiles',
-    #     frac_train=sr[0], frac_valid=sr[1], frac_test=sr[2],
-    #     random_seed=random_seed,
-    # )
     if split_type=="random":
-        train_df, valid_df, test_df = random_split(df, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed)
+        train_df, valid_df, test_df = random_split(df, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed_split)
     elif split_type=="random_scaffold":
-        train_df, valid_df, test_df = random_scaffold_split(df, df['smiles'].values, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed, dataframe=True)
+        train_df, valid_df, test_df = random_scaffold_split(df, df['smiles'].values, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed_split, dataframe=True)
     print(f"Split: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
-    config['dataset']['smiles_column'] = 'smiles'
-    config['dataset']['target_column'] = 'target'
-    return train_df, valid_df, test_df, config
+    return train_df, valid_df, test_df
 
 
-def save_splits(train_df, valid_df, test_df, output_dir, dataset_name):
+def save_splits(config: Dict, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame):
+    output_dir = config['data']['processed_dir']
+    dataset_name = config['dataset']['name']
     ds_dir = os.path.join(output_dir, dataset_name)
     os.makedirs(ds_dir, exist_ok=True)
     train_df.to_csv(os.path.join(ds_dir, 'train.csv'), index=False)
@@ -207,12 +167,13 @@ class SchNetMolDataset(Dataset):
 
     def __init__(
         self,
+        config: Dict,
         df: pd.DataFrame,
-        cache_path: Optional[str] = None,
-        num_conformers: int = 10,
-        optimize_mmff: bool = True,
-        random_seed: int = 42,
+        cache_path: Optional[str] = None
     ):
+        self.random_seed_gen = config['conformer']['random_seed_gen'] 
+        self.num_conformers = config['conformer']['num_conformers'] 
+        self.optimize_mmff = config['conformer']['optimize_mmff']
         self.smiles = df['smiles'].tolist()
         self.targets = df['target'].values.astype(np.float32)
 
@@ -230,8 +191,8 @@ class SchNetMolDataset(Dataset):
             self.atomic_numbers, self.positions = [], []
             for i, smi in enumerate(self.smiles):
                 atoms_list, coords_list = inner_smi2coords(
-                    smi, seed=random_seed, mode='fast',
-                    optimize=optimize_mmff, n_confs=num_conformers,
+                    smi=smi, seed=self.random_seed_gen, mode='fast',
+                    optimize=self.optimize_mmff, n_confs=self.num_conformers,
                 )
                 if atoms_list[0] is None or len(atoms_list[0]) == 0:
                     self.atomic_numbers.append(None)
@@ -244,7 +205,7 @@ class SchNetMolDataset(Dataset):
                 if (i + 1) % 100 == 0:
                     print(f"  Conformer generation: {i+1}/{len(self.smiles)}")
             failed = None  # không cần track riêng, filter ở bước dưới
-            
+        
             if cache_path:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 with open(cache_path, 'wb') as f:
@@ -304,13 +265,13 @@ def collate_schnet(batch: List[Dict]) -> Dict[str, torch.Tensor]:
 
 
 def create_dataloaders(
+    config: Dict,
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    config: Dict,
-    dataset_name: str,
+    test_df: pd.DataFrame
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/valid/test DataLoaders with conformer caching."""
+    dataset_name = config['dataset']['name']
     cache_dir = os.path.join(config['data']['processed_dir'], dataset_name, 'conformers')
     conf_cfg = config.get('conformer', {})
 
@@ -318,10 +279,9 @@ def create_dataloaders(
     for split_name, df in [('train', train_df), ('valid', valid_df), ('test', test_df)]:
         cache_path = os.path.join(cache_dir, f'{split_name}.pkl')
         datasets[split_name] = SchNetMolDataset(
-            df,
-            cache_path=cache_path,
-            num_conformers=conf_cfg.get('num_conformers', 10),
-            optimize_mmff=conf_cfg.get('optimize_mmff', True),
+            config=config,
+            df=df,
+            cache_path=cache_path
         )
 
     bs = config['training']['batch_size']

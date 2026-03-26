@@ -1,11 +1,60 @@
 # Base configuration for CONAN-SchNet Project
 
+defaults:
+  - _self_
+
+# Chọn dataset để train, override từ CLI: dataset=esol
+dataset_name: esol
+
+# Dataset configs 
+datasets:
+  esol:
+    name: "esol"
+    file: "refined_ESOL.csv"
+    smiles_column: "smiles"
+    target_column: "measured"
+    task_type: "regression"
+    metric: "rmse"
+
+  freesolv:
+    name: "freesolv"
+    file: "refined_FreeSolv.csv"
+    smiles_column: "smiles"
+    target_column: "measured"
+    task_type: "regression"
+    metric: "rmse"
+
+  lipo:
+    name: "lipo"
+    file: "refined_Lipophilicity.csv"
+    smiles_column: "smiles"
+    target_column: "measured"
+    task_type: "regression"
+    metric: "rmse"
+
+  bace:
+    name: "bace"
+    file: "refined_BACE.csv"
+    smiles_column: "smiles"
+    target_column: "class"
+    task_type: "classification"
+    metric: "auc"
+
 data:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
-  split_method: "scaffold"
-  random_seed: 0
+  split_method: "random_scaffold"
+  random_seed_split: 0
+
+# Conformer generation
+conformer:
+  num_conformers: 1        # Single ETKDG conformer per molecule
+  max_attempts: 500        # Max ETKDG attempts
+  prune_rms_thresh: 0.0    # RMSD threshold for pruning
+  use_random_coords: false
+  optimize_mmff: true      # No MMFF optimization
+  random_seed_gen: 42
 
 # SchNet model settings
 schnet:
@@ -16,14 +65,6 @@ schnet:
   n_filters: 128           # Number of filters in continuous-filter conv
   atomref: null             # Atomic reference energies (null = learn from data)
 
-# Conformer generation
-conformer:
-  num_conformers: 5        # Single ETKDG conformer per molecule
-  max_attempts: 500        # Max ETKDG attempts
-  prune_rms_thresh: 0.0    # RMSD threshold for pruning
-  use_random_coords: false
-  optimize_mmff: true      # No MMFF optimization
-
 # Training settings (Step 1 - SGD baseline)
 training:
   epochs: 300
@@ -33,7 +74,7 @@ training:
   scheduler: "reduce_on_plateau"
   scheduler_patience: 25
   scheduler_factor: 0.5
-  early_stopping_patience: 50
+  early_stopping_patience: 100
   save_checkpoints: true
   gradient_clip: 1.0
 

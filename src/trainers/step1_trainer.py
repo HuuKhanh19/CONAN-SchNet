@@ -167,7 +167,9 @@ class Step1Trainer:
             epoch_start = time.time()
 
             # Train
+            # print(6)
             train_metrics = self.train_epoch(train_loader)
+            # print(7)
 
             # Validate
             val_metrics = self.evaluate(valid_loader)

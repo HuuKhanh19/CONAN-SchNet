@@ -1,12 +1,11 @@
 #!/usr/bin/env python
-"""
-Preprocess Data: Load raw CSV -> scaffold split -> save to data/processed/
-"""
+"""Preprocess Data: Load raw CSV -> scaffold split -> save to data/processed/"""
 
 import os
-import sys
-import argparse
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
+import sys
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
@@ -15,31 +14,27 @@ from src.data import prepare_dataset, save_splits
 DATASETS = ['esol', 'freesolv', 'lipo', 'bace']
 
 
-def preprocess_single(dataset_name, config_dir="configs"):
+def preprocess_single(dataset_name: str, cfg: DictConfig):
     print(f"\n{'='*50}")
     print(f"Processing: {dataset_name.upper()}")
     print(f"{'='*50}")
 
-    train_df, valid_df, test_df, config = prepare_dataset(
-        dataset_name,
-        base_config_path=os.path.join(config_dir, "base.yaml"),
-        dataset_config_dir=os.path.join(config_dir, "datasets"),
-    )
+    config = OmegaConf.to_container(cfg, resolve=True)
+    config['dataset'] = config['datasets'][dataset_name]
+
+    train_df, valid_df, test_df = prepare_dataset(config)
     processed_dir = config['data']['processed_dir']
     save_splits(train_df, valid_df, test_df, processed_dir, dataset_name)
     return len(train_df), len(valid_df), len(test_df)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Preprocess molecular datasets")
-    parser.add_argument('--dataset', type=str, default='all',
-                        choices=['all'] + DATASETS)
-    parser.add_argument('--config-dir', type=str, default='configs')
-    args = parser.parse_args()
+@hydra.main(version_base=None, config_path="../configs", config_name="base")
+def main(cfg: DictConfig):
+    os.chdir(hydra.utils.get_original_cwd())
 
-    os.chdir(project_root)
-
-    datasets = DATASETS if args.dataset == 'all' else [args.dataset]
+    # dataset_name=all hoặc dataset_name=esol
+    dataset_name = cfg.get('dataset_name', 'all')
+    datasets = DATASETS if dataset_name == 'all' else [dataset_name]
 
     print("=" * 60)
     print("CONAN-SchNet - Data Preprocessing")
@@ -48,7 +43,7 @@ def main():
     results = {}
     for ds in datasets:
         try:
-            tr, va, te = preprocess_single(ds, args.config_dir)
+            tr, va, te = preprocess_single(ds, cfg)
             results[ds] = (tr, va, te)
         except FileNotFoundError as e:
             print(f"Warning: {e}")

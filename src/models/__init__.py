@@ -1,4 +1,4 @@
 """Models module."""
-from .schnet_wrapper import SchNetWrapper, build_schnet_model
+from .schnet import SchNet, build_schnet_model
 
-__all__ = ['SchNetWrapper', 'build_schnet_model']
+__all__ = ['SchNet', 'build_schnet_model']

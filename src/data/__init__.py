@@ -1,20 +1,17 @@
 """Data loading and preprocessing module."""
 
-from .scaffold_split import scaffold_split_dataframe, generate_scaffold_split
 from .conformer import inner_smi2coords
 from .data_loader import (
     prepare_dataset,
     save_splits,
-    load_config,
-    merge_configs,
     SchNetMolDataset,
     collate_schnet,
     create_dataloaders,
 )
 
 __all__ = [
-    'scaffold_split_dataframe', 'generate_scaffold_split',
-    'smiles_to_3d', 'batch_smiles_to_3d',
-    'prepare_dataset', 'save_splits', 'load_config', 'merge_configs',
+    'generate_scaffold_split',
+    'inner_smi2coords',
+    'prepare_dataset', 'save_splits',
     'SchNetMolDataset', 'collate_schnet', 'create_dataloaders',
 ]
