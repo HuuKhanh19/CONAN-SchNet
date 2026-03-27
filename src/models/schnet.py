@@ -63,9 +63,13 @@ class SchNet(torch.nn.Module):
                                      num_filters, self.cutoff)
             self.interactions.append(block)
 
-        self.lin1 = Linear(hidden_channels, hidden_channels // 2)
-        self.act = ShiftedSoftplus()
-        self.lin2 = Linear(hidden_channels // 2, out_channels)
+        self.lin1 = Linear(hidden_channels, hidden_channels)
+        self.act1 = ShiftedSoftplus()
+        self.lin2 = Linear(hidden_channels, hidden_channels)
+
+        self.lin3 = Linear(hidden_channels, hidden_channels // 2)
+        self.act2 = ShiftedSoftplus()
+        self.lin4 = Linear(hidden_channels // 2, out_channels)
         
         self.task_type = task_type
         if task_type == "classification":
@@ -126,13 +130,17 @@ class SchNet(torch.nn.Module):
         for interaction in self.interactions:
             inter = interaction(h, edge_index, edge_weight, edge_attr)
             h = h + inter
-        
+
+        h = self.lin1(h)
+        h = self.act1(h)
+        h = self.lin2(h)
+                
         # molecule_embedding
         mol_embedding = self.readout(h, batch, dim=0)  # (batch_size, hidden_channels)
 
-        out = self.lin1(mol_embedding)
-        out = self.act(out)
-        out = self.lin2(out)
+        out = self.lin3(mol_embedding)
+        out = self.act2(out)
+        out = self.lin4(out)
         out = self.sigmoid(out)
         out = out.squeeze(-1)  # (batch_size,)
 
@@ -144,6 +152,79 @@ class SchNet(torch.nn.Module):
             result['embedding'] = mol_embedding.detach()
 
         return result
+
+    # def forward(
+    #     self,
+    #     inputs: Dict[str, Tensor],
+    #     return_embedding: bool = False,
+    #     embedding_mode: str = 'molecule',  # 'molecule' | 'atom' | 'conformer'
+    # ) -> Dict[str, Tensor]:
+    #     z = inputs['_atomic_numbers']     # (B*K*n_atoms,)
+    #     pos = inputs['_positions']        # (B*K*n_atoms, 3)
+    #     batch = inputs['_idx_m']          # (B*K*n_atoms,) — conf-level index
+
+    #     h = self.embedding(z)
+    #     edge_index, edge_weight = self.interaction_graph(pos, batch)
+    #     edge_attr = self.distance_expansion(edge_weight)
+
+    #     for interaction in self.interactions:
+    #         h = h + interaction(h, edge_index, edge_weight, edge_attr)
+    #     # h: (B*K*n_atoms, hidden_channels)
+
+    #     result = {}
+
+    #     if return_embedding and embedding_mode == 'atom':
+    #         # Trả về atom-level: (B*K*n_atoms, hidden_channels)
+    #         result['embedding'] = h  # caller tự reshape
+
+    #     # Pool atoms → conformer-level embedding
+    #     n_conf_samples = inputs['_n_atoms'].shape[0]  # B*K
+    #     conf_embedding = torch.zeros(
+    #         n_conf_samples, self.hidden_channels,
+    #         device=h.device, dtype=h.dtype
+    #     )
+    #     conf_embedding.index_add_(0, batch, h)
+    #     # conf_embedding: (B*K, hidden_channels)
+
+    #     if return_embedding and embedding_mode == 'conformer':
+    #         # Trả về (B*K, hidden_channels), caller reshape thành (B, K, hidden_channels)
+    #         result['embedding'] = conf_embedding
+    #         result['n_conformers'] = inputs['_n_conformers']
+    #         return result
+
+    #     # Pool conformers → molecule-level embedding
+    #     # Dùng _idx_mol để biết conf nào thuộc mol nào
+    #     # Cần tạo conf→mol mapping: mỗi conf sample thuộc molecule nào
+    #     n_conformers = inputs['_n_conformers']  # (B,)
+    #     batch_size = n_conformers.shape[0]
+    #     conf_mol_idx = torch.repeat_interleave(
+    #         torch.arange(batch_size, device=h.device),
+    #         n_conformers
+    #     )  # (B*K,) — conf i thuộc molecule conf_mol_idx[i]
+
+    #     mol_embedding = torch.zeros(
+    #         batch_size, self.hidden_channels,
+    #         device=h.device, dtype=h.dtype
+    #     )
+    #     mol_embedding.index_add_(0, conf_mol_idx, conf_embedding)
+    #     mol_embedding = mol_embedding / n_conformers.float().unsqueeze(-1)
+    #     # mol_embedding: (B, hidden_channels) — mean over conformers
+
+    #     if return_embedding and embedding_mode == 'molecule':
+    #         result['embedding'] = mol_embedding
+
+    #     # Prediction head
+    #     out = self.lin1(mol_embedding)
+    #     out = self.act(out)
+    #     out = self.lin2(out)
+    #     out = self.sigmoid(out)
+    #     out = out.squeeze(-1)  # (B,)
+
+    #     if self.scale is not None:
+    #         out = out * self.scale
+
+    #     result['prediction'] = out
+    #     return result
 
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}('

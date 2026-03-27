@@ -202,6 +202,7 @@ class SchNetMolDataset(Dataset):
                         np.array([pt.GetAtomicNumber(s) for s in atoms_list[0]], dtype=np.int64)
                     )
                     self.positions.append(coords_list[0])  # best conformer (lowest energy)
+                    # self.positions.append(coords_list)
                 if (i + 1) % 100 == 0:
                     print(f"  Conformer generation: {i+1}/{len(self.smiles)}")
             failed = None  # không cần track riêng, filter ở bước dưới
@@ -234,6 +235,13 @@ class SchNetMolDataset(Dataset):
             'positions': torch.from_numpy(self.positions[idx]),             # (n_atoms, 3)
             'target': torch.tensor(self.targets[idx], dtype=torch.float32), # scalar
         }
+    
+    # def __getitem__(self, idx):
+    #     return {
+    #         'atomic_numbers': torch.from_numpy(self.atomic_numbers[idx]),   # (n_atoms,)
+    #         'positions': [torch.from_numpy(p) for p in self.positions[idx]], # list of K (n_atoms, 3)
+    #         'target': torch.tensor(self.targets[idx], dtype=torch.float32),
+    #     }
 
 
 def collate_schnet(batch: List[Dict]) -> Dict[str, torch.Tensor]:
@@ -262,6 +270,47 @@ def collate_schnet(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         '_n_atoms': torch.tensor(all_n_atoms, dtype=torch.long),
         'target': torch.stack(all_target),                     # (batch_size,)
     }
+
+# def collate_schnet(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+#     """
+#     Với K conformers per molecule, batch_size = B:
+#     - Treat mỗi (molecule, conformer) như 1 sample riêng
+#     - Thêm conf_batch_idx để biết conformer nào thuộc molecule nào
+#     """
+#     all_z = []
+#     all_pos = []
+#     all_target = []
+#     all_mol_idx = []    # atom → molecule index (0..B-1)
+#     all_conf_idx = []   # atom → (molecule, conformer) index (0..B*K-1)
+#     all_n_atoms = []
+
+#     conf_sample_idx = 0  # global index cho từng (mol, conf) pair
+
+#     for mol_idx, sample in enumerate(batch):
+#         z = sample['atomic_numbers']          # (n_atoms,)
+#         positions_list = sample['positions']  # list of K tensors (n_atoms, 3)
+#         n = z.shape[0]
+#         K = len(positions_list)
+
+#         for k, pos in enumerate(positions_list):
+#             all_z.append(z)
+#             all_pos.append(pos)                             # (n_atoms, 3)
+#             all_mol_idx.append(torch.full((n,), mol_idx, dtype=torch.long))
+#             all_conf_idx.append(torch.full((n,), conf_sample_idx, dtype=torch.long))
+#             all_n_atoms.append(n)
+#             conf_sample_idx += 1
+
+#         all_target.append(sample['target'])
+
+#     return {
+#         '_atomic_numbers': torch.cat(all_z),           # (B*K*n_atoms,)
+#         '_positions': torch.cat(all_pos),               # (B*K*n_atoms, 3)
+#         '_idx_m': torch.cat(all_conf_idx),              # (B*K*n_atoms,) — dùng để radius_graph
+#         '_idx_mol': torch.cat(all_mol_idx),             # (B*K*n_atoms,) — dùng để pool về molecule
+#         '_n_atoms': torch.tensor(all_n_atoms, dtype=torch.long),  # (B*K,)
+#         '_n_conformers': torch.tensor([len(s['positions']) for s in batch], dtype=torch.long),  # (B,)
+#         'target': torch.stack(all_target),              # (B,)
+#     }
 
 
 def create_dataloaders(

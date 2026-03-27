@@ -15,6 +15,7 @@ sys.path.insert(0, project_root)
 from src.data.data_loader import prepare_dataset, save_splits, create_dataloaders
 from src.models.schnet import build_schnet_model
 from src.trainers.step1_trainer import Step1Trainer
+from src.utils.utils import set_seed
 
 
 def run_step1(config: dict, device: torch.device):
@@ -37,13 +38,10 @@ def run_step1(config: dict, device: torch.device):
         save_splits(config, train_df, valid_df, test_df)
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
-    print(0)
 
     train_loader, valid_loader, test_loader = create_dataloaders(config, train_df, valid_df, test_df)
 
-    print(1)
     model = build_schnet_model(config)
-    print(2)
     print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -52,11 +50,8 @@ def run_step1(config: dict, device: torch.device):
         f"step1_{dataset_name}_{timestamp}",
     )
 
-    print(3)
     trainer = Step1Trainer(model=model, config=config, device=device, experiment_dir=exp_dir)
-    print(4)
     results = trainer.train(train_loader, valid_loader, test_loader)
-    print(5)
     print(f"\nResults saved to: {exp_dir}")
     return results
 
