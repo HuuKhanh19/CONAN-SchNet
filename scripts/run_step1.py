@@ -15,7 +15,6 @@ sys.path.insert(0, project_root)
 from src.data.data_loader import prepare_dataset, save_splits, create_dataloaders
 from src.models.schnet import build_schnet_model
 from src.trainers.step1_trainer import Step1Trainer
-from src.utils.utils import set_seed
 
 
 def run_step1(config: dict, device: torch.device):
