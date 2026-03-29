@@ -15,10 +15,16 @@ sys.path.insert(0, project_root)
 from src.data.data_loader import prepare_dataset, save_splits, create_dataloaders
 from src.models.schnet import build_schnet_model
 from src.trainers.step1_trainer import Step1Trainer
+from src.utils.utils import seed_everything
 
 
 def run_step1(config: dict, device: torch.device):
     dataset_name = config['dataset']['name']
+
+    train_seed = config['random_seed_train']
+    seed_everything(train_seed)
+    print(f"random_seed_train: {train_seed}")
+
     print(f"\n{'='*60}")
     print(f"Step 1: SchNet Baseline - {dataset_name.upper()}")
     print(f"{'='*60}")
@@ -68,10 +74,10 @@ def main(cfg: DictConfig):
     config['dataset'] = config['datasets'][dataset_name]
 
     # Device
-    gpu = cfg.get('gpu', 0)
+    gpu = cfg.get('gpu')
     if torch.cuda.is_available() and gpu >= 0:
         device = torch.device(f"cuda:{gpu}")
-        print(f"Using GPU: {torch.cuda.get_device_name(device)}")
+        print(f"Using GPU: {torch.cuda.get_device_name(device)} --gpu={gpu}")
     else:
         device = torch.device("cpu")
         print("Using CPU")

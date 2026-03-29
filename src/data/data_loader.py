@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Dict, Any, Optional, Tuple, List
 
-from .splitter import random_split, random_scaffold_split
+from .splitters import random_split, random_scaffold_split
 from .conformer import inner_smi2coords
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def preprocess_dataframe(
 def prepare_dataset(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
     random_seed_split = config['data']['random_seed_split']
     split_type = config['data']['split_method']
-    print(f"Preparing dataset with split method: {split_type}, random_seed: {random_seed_split}")
+    print(f"Preparing dataset with split method: {split_type}, random_seed_split: {random_seed_split}")
 
     raw_dir = config['data']['raw_dir']
     filename = config['dataset']['file']
@@ -136,9 +136,9 @@ def prepare_dataset(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     print(f"After preprocessing: {len(df)} molecules")
 
     if split_type=="random":
-        train_df, valid_df, test_df = random_split(df, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed_split)
+        train_df, valid_df, test_df = random_split(df, random_seed = random_seed_split, ratio_test= 0.1, ration_valid= 0.1)
     elif split_type=="random_scaffold":
-        train_df, valid_df, test_df = random_scaffold_split(df, df['smiles'].values, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed_split, dataframe=True)
+        train_df, valid_df, test_df = random_scaffold_split(df, df['smiles'].values, random_seed = random_seed_split, ratio_test= 0.1, ration_valid= 0.1, dataframe=True)
     print(f"Split: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
     return train_df, valid_df, test_df
@@ -186,6 +186,7 @@ class SchNetMolDataset(Dataset):
             self.positions = cache['positions']
         else:
             print(f"  Generating conformers for {len(self.smiles)} molecules...")
+            print(f"Random_seed_gen = {self.random_seed_gen}")
             from rdkit.Chem import GetPeriodicTable
             pt = GetPeriodicTable()
             self.atomic_numbers, self.positions = [], []
