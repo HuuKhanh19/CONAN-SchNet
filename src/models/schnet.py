@@ -6,6 +6,20 @@ from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 import torch
+import random
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# ⚠️ ĐẶT Ở ĐÂY (rất quan trọng)
+set_seed(42)
 import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Embedding, Linear, ModuleList, Sequential
@@ -24,7 +38,7 @@ class SchNet(torch.nn.Module):
     def __init__(
         self,
         hidden_channels: int = 128,
-        out_channels: int = 1,
+        out_channels: int = 128,
         num_filters: int = 128,
         num_interactions: int = 6,
         num_gaussians: int = 50,
@@ -63,20 +77,20 @@ class SchNet(torch.nn.Module):
                                      num_filters, self.cutoff)
             self.interactions.append(block)
 
-        self.lin1 = Linear(hidden_channels, hidden_channels)
-        self.act1 = ShiftedSoftplus()
-        self.lin2 = Linear(hidden_channels, hidden_channels)
-
-        self.lin3 = Linear(hidden_channels, hidden_channels // 2)
-        self.act2 = ShiftedSoftplus()
-        self.lin4 = Linear(hidden_channels // 2, out_channels)
+        self.lin1 = Linear(hidden_channels, hidden_channels )
+        self.act = ShiftedSoftplus()
+        self.lin2 = Linear(hidden_channels , out_channels)
         
         self.task_type = task_type
         if task_type == "classification":
             self.sigmoid = nn.Sigmoid()
         else:
             self.sigmoid = nn.Identity()
-
+        self.mlp_head = Sequential(
+            Linear(hidden_channels, hidden_channels//2),
+            ShiftedSoftplus(),
+            Linear(hidden_channels//2, 1),
+        )
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -89,9 +103,12 @@ class SchNet(torch.nn.Module):
         torch.nn.init.xavier_uniform_(self.lin2.weight)
         self.lin2.bias.data.fill_(0)
 
-    # def forward(self, z: Tensor, pos: Tensor,
-    #             batch: OptTensor = None) -> Tensor:
-    #     batch = torch.zeros_like(z) if batch is None else batch
+    # def forward(self,
+    #          inputs: Dict[str, Tensor],
+    #          return_embedding: bool = False) -> Tensor:
+    #     z = inputs['_atomic_numbers']
+    #     batch = inputs['_idx_m']
+    #     pos = inputs['_positions']
 
     #     h = self.embedding(z)
     #     edge_index, edge_weight = self.interaction_graph(pos, batch)
@@ -100,131 +117,174 @@ class SchNet(torch.nn.Module):
     #     for interaction in self.interactions:
     #         inter = interaction(h, edge_index, edge_weight, edge_attr)
     #         h = h + inter
+    #     # print(h.shape)
 
     #     h = self.lin1(h)
+    #     # print("out put lin1")
+    #     # print(h.shape)
     #     h = self.act(h)
+    #     # print("output act")
+    #     # print(h.shape)
     #     h = self.lin2(h)
-        
+    #     # print("out put lin2")
+    #     # print(h.shape)
     #     out = self.readout(h, batch, dim=0)
-    #     out = self.sigmoid(out)
+    #     # print("out put readout")
+    #     # print(h.shape)
+
+    #     # print("out put sigmoid")
+    #     # print(h.shape)
 
 
     #     if self.scale is not None:
     #         out = out * self.scale
+    #     #code sua tu day
+    #     out = self.sigmoid(out)
+    #     out = self.mlp_head(out).squeeze(-1)
+    #     result = {'prediction': out}
+    #     if return_embedding:
+    #         result['embedding'] = mol_embedding.detach()
 
-    #     return out
-
+    #     return result
+    
+    
+    #Fix------------------------------------------------------------------------
     def forward(
             self,
             inputs: Dict[str, Tensor],
-            return_embedding: bool = False
+            return_embedding: bool = True
         ) -> Dict[str, Tensor]:
-        z = inputs['_atomic_numbers']
-        pos = inputs['_positions']
-        batch = inputs['_idx_m']
+            z = inputs['_atomic_numbers']              # (total_atoms,)
+            pos = inputs['_positions']                 # (total_atoms, 3)
+            atom_to_conf = inputs['_idx_atom_to_conf'] # (total_atoms,)
+            conf_to_mol = inputs['_idx_conf_to_mol']   # (num_total_confs,)
+            num_atoms_per_mol = inputs['num_atoms_per_mol']   # (batch_size,)
+            num_confs_per_mol = inputs['num_confs_per_mol']   # (batch_size,)
+            # print("shape z")
+            # print(z.shape)
+            h = self.embedding(z)
+            # print("h shape")
+            # print(h.shape)
+            edge_index, edge_weight = self.interaction_graph(pos, atom_to_conf)
+            # print("edge_index shape")
+            # print(edge_index.shape)
+            # print("edge_weight shape")
+            # print(edge_weight.shape)
+            edge_attr = self.distance_expansion(edge_weight)
 
-        h = self.embedding(z)
-        edge_index, edge_weight = self.interaction_graph(pos, batch)
-        edge_attr = self.distance_expansion(edge_weight)
+            for interaction in self.interactions:
+                inter = interaction(h, edge_index, edge_weight, edge_attr)
+                h = h + inter
 
-        for interaction in self.interactions:
-            inter = interaction(h, edge_index, edge_weight, edge_attr)
-            h = h + inter
+            h = self.lin1(h)
+            h = self.act(h)
+            h = self.lin2(h)
 
-        h = self.lin1(h)
-        h = self.act1(h)
-        h = self.lin2(h)
-                
-        # molecule_embedding
-        mol_embedding = self.readout(h, batch, dim=0)  # (batch_size, hidden_channels)
+            # atom -> conformer
+            conf_embedding = self.readout(h, atom_to_conf, dim=0)   # (num_total_confs, hidden_dim)
+            # print(conf_embedding.shape)
 
-        out = self.lin3(mol_embedding)
-        out = self.act2(out)
-        out = self.lin4(out)
-        out = self.sigmoid(out)
-        out = out.squeeze(-1)  # (batch_size,)
+            # conformer -> molecule
+            mol_embedding = self.readout(conf_embedding, conf_to_mol, dim=0)  # (bacotch_size, hidden_dim)
+            # print(mol_embedding.shape)
 
-        if self.scale is not None:
-            out = out * self.scale
+            out = self.mlp_head(mol_embedding).squeeze(-1)
 
-        result = {'prediction': out}
-        if return_embedding:
-            result['embedding'] = mol_embedding.detach()
+            if self.scale is not None:
+                out = out * self.scale
 
-        return result
+            if self.task_type == "classification":
+                out = self.sigmoid(out)
 
-    # def forward(
-    #     self,
-    #     inputs: Dict[str, Tensor],
-    #     return_embedding: bool = False,
-    #     embedding_mode: str = 'molecule',  # 'molecule' | 'atom' | 'conformer'
-    # ) -> Dict[str, Tensor]:
-    #     z = inputs['_atomic_numbers']     # (B*K*n_atoms,)
-    #     pos = inputs['_positions']        # (B*K*n_atoms, 3)
-    #     batch = inputs['_idx_m']          # (B*K*n_atoms,) — conf-level index
+            result = {
+                "prediction": out,
+            }
 
-    #     h = self.embedding(z)
-    #     edge_index, edge_weight = self.interaction_graph(pos, batch)
-    #     edge_attr = self.distance_expansion(edge_weight)
+            if return_embedding:
+                # reconstruct per molecule:
+                # h is flattened atom embeddings for all conformers
+                atom_embeddings_per_mol = []
 
-    #     for interaction in self.interactions:
-    #         h = h + interaction(h, edge_index, edge_weight, edge_attr)
-    #     # h: (B*K*n_atoms, hidden_channels)
+                atom_offset = 0
+                for n_atoms, n_confs in zip(num_atoms_per_mol.tolist(), num_confs_per_mol.tolist()):
+                    n_total_atoms_this_mol = n_atoms * n_confs
 
-    #     result = {}
+                    h_mol = h[atom_offset: atom_offset + n_total_atoms_this_mol]
+                    h_mol = h_mol.view(n_confs, n_atoms, -1)   # (num_conformer, num_atom, hidden_dim)
 
-    #     if return_embedding and embedding_mode == 'atom':
-    #         # Trả về atom-level: (B*K*n_atoms, hidden_channels)
-    #         result['embedding'] = h  # caller tự reshape
+                    atom_embeddings_per_mol.append(h_mol)
+                    atom_offset += n_total_atoms_this_mol
 
-    #     # Pool atoms → conformer-level embedding
-    #     n_conf_samples = inputs['_n_atoms'].shape[0]  # B*K
-    #     conf_embedding = torch.zeros(
-    #         n_conf_samples, self.hidden_channels,
-    #         device=h.device, dtype=h.dtype
-    #     )
-    #     conf_embedding.index_add_(0, batch, h)
-    #     # conf_embedding: (B*K, hidden_channels)
+                result["embedding"] = atom_embeddings_per_mol
+                result["mol_embedding"] = mol_embedding.detach()
+            # print(len(result["embedding"]))
+            # print(len(result["embedding"][0]))
+            
+            return result
 
-    #     if return_embedding and embedding_mode == 'conformer':
-    #         # Trả về (B*K, hidden_channels), caller reshape thành (B, K, hidden_channels)
-    #         result['embedding'] = conf_embedding
-    #         result['n_conformers'] = inputs['_n_conformers']
-    #         return result
 
-    #     # Pool conformers → molecule-level embedding
-    #     # Dùng _idx_mol để biết conf nào thuộc mol nào
-    #     # Cần tạo conf→mol mapping: mỗi conf sample thuộc molecule nào
-    #     n_conformers = inputs['_n_conformers']  # (B,)
-    #     batch_size = n_conformers.shape[0]
-    #     conf_mol_idx = torch.repeat_interleave(
-    #         torch.arange(batch_size, device=h.device),
-    #         n_conformers
-    #     )  # (B*K,) — conf i thuộc molecule conf_mol_idx[i]
+#     def forward(
+#             self,
+#             inputs: Dict[str, Tensor],
+#             return_embedding: bool = False
+#         ) -> Dict[str, Tensor]:
+#         z = inputs['_atomic_numbers']
+#         pos = inputs['_positions']
+#         batch = inputs['_idx_m']
+#         # print(z.shape)
+#         h = self.embedding(z)
+#         # print(h.shape)
+#         edge_index, edge_weight = self.interaction_graph(pos, batch)
+#         # print("---------------index-------------")
+#         # print(edge_index.shape)
+#         # print("---------------index-------------")
+#         # print(edge_weight.shape)
 
-    #     mol_embedding = torch.zeros(
-    #         batch_size, self.hidden_channels,
-    #         device=h.device, dtype=h.dtype
-    #     )
-    #     mol_embedding.index_add_(0, conf_mol_idx, conf_embedding)
-    #     mol_embedding = mol_embedding / n_conformers.float().unsqueeze(-1)
-    #     # mol_embedding: (B, hidden_channels) — mean over conformers
+#         edge_attr = self.distance_expansion(edge_weight)
+#         # print("---------------index-------------")
+#         # print(edge_attr.shape)
+# #         ----------------------------------------------------------------------
+# # h = torch.Size([773, 128])
+# # ---------------index-------------
+# # edge_index = torch.Size([2, 13201])
+# # ---------------index-------------
+# # edge_weight = torch.Size([13201])
+# # ---------------index-------------
+# # edge_attr = torch.Size([13201, 50])
+#         for interaction in self.interactions:
+#             # print(interaction)
+            
+#             inter = interaction(h, edge_index, edge_weight, edge_attr)
+#             h = h + inter
+        
+#         # molecule_embedding
+#         mol_embedding = self.readout(h, batch, dim=0)  # (batch_size, hidden_channels)
+#         print(mol_embedding.shape)
+        
 
-    #     if return_embedding and embedding_mode == 'molecule':
-    #         result['embedding'] = mol_embedding
+#         out = self.lin1(mol_embedding)
+#         # print("output lin 1")
+#         # print(out.shape)
+#         out = self.act(out)
+#         # print("output act")
+#         # print(out.shape)
+#         out = self.lin2(out)
+#         # print("output lin 2")
+#         # print(out.shape)
+#         out = self.sigmoid(out)
+#         # print("output sigmoid")
+#         # print(out.shape)
+#         out = out.squeeze(-1)  # (batch_size,)
+#         # print("output squeeze")
+#         # print(out.shape)
+#         if self.scale is not None:
+#             out = out * self.scale
 
-    #     # Prediction head
-    #     out = self.lin1(mol_embedding)
-    #     out = self.act(out)
-    #     out = self.lin2(out)
-    #     out = self.sigmoid(out)
-    #     out = out.squeeze(-1)  # (B,)
+#         result = {'prediction': out}
+#         if return_embedding:
+#             result['embedding'] = mol_embedding.detach()
 
-    #     if self.scale is not None:
-    #         out = out * self.scale
-
-    #     result['prediction'] = out
-    #     return result
+#         return result
 
     def __repr__(self) -> str:
         return (f'{self.__class__.__name__}('
@@ -298,9 +358,13 @@ class InteractionBlock(torch.nn.Module):
 
     def forward(self, x: Tensor, edge_index: Tensor, edge_weight: Tensor,
                 edge_attr: Tensor) -> Tensor:
+        # print(x.shape)
         x = self.conv(x, edge_index, edge_weight, edge_attr)
+        # print(x.shape)
         x = self.act(x)
+        # print(x.shape)
         x = self.lin(x)
+        # print(x.shape)
         return x
 
 
@@ -315,6 +379,7 @@ class CFConv(MessagePassing):
     ):
         super().__init__(aggr='add')
         self.lin1 = Linear(in_channels, num_filters, bias=False)
+
         self.lin2 = Linear(num_filters, out_channels)
         self.nn = nn
         self.cutoff = cutoff
@@ -332,8 +397,17 @@ class CFConv(MessagePassing):
         W = self.nn(edge_attr) * C.view(-1, 1)
 
         x = self.lin1(x)
+        # print("----------------CFConv--------------")
+        # print(x.shape)
         x = self.propagate(edge_index, x=x, W=W)
+        # print(self.propagate)
+        
+        # print("----------------CFConv--------------")
+        # print(x.shape)
         x = self.lin2(x)
+        
+        # print("----------------CFConv--------------")
+        # print(x.shape)
         return x
 
     def message(self, x_j: Tensor, W: Tensor) -> Tensor:
@@ -371,7 +445,7 @@ def build_schnet_model(config: Dict) -> SchNet:
     schnet_cfg = config.get('schnet', {})
     model = SchNet(
         hidden_channels=schnet_cfg.get('n_atom_basis', 128),
-        out_channels=1,
+        out_channels=128,
         num_filters=schnet_cfg.get('n_filters', 128),
         num_interactions=schnet_cfg.get('n_interactions', 6),
         num_gaussians=schnet_cfg.get('n_rbf', 50),

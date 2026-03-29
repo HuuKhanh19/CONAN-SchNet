@@ -23,8 +23,11 @@ def preprocess_single(dataset_name: str, cfg: DictConfig):
     config['dataset'] = config['datasets'][dataset_name]
 
     train_df, valid_df, test_df = prepare_dataset(config)
-    processed_dir = config['data']['processed_dir']
-    save_splits(train_df, valid_df, test_df, processed_dir, dataset_name)
+    base_dir = config['data']['processed_dir']
+    seed = config['data']['random_seed_split']
+
+    processed_dir = f"{base_dir}/{dataset_name}/seed_{seed}"
+    save_splits(train_df, valid_df, test_df, processed_dir)
     return len(train_df), len(valid_df), len(test_df)
 
 
@@ -34,6 +37,7 @@ def main(cfg: DictConfig):
 
     # dataset_name=all hoặc dataset_name=esol
     dataset_name = cfg.get('dataset_name', 'all')
+
     datasets = DATASETS if dataset_name == 'all' else [dataset_name]
 
     print("=" * 60)

@@ -3,6 +3,7 @@
 defaults:
   - _self_
 
+# Chọn dataset để train, override từ CLI: dataset=esol
 dataset_name: esol
 random_seed_train: 0
 gpu: 1
@@ -46,15 +47,15 @@ data:
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
   split_method: "random_scaffold"
-  random_seed_split: 5
+  random_seed_split: 0
 
 # Conformer generation
 conformer:
-  num_conformers: 5        # Single ETKDG conformer per molecule
+  num_conformers: 1        # Single ETKDG conformer per molecule
   max_attempts: 500        # Max ETKDG attempts
   prune_rms_thresh: 0.0    # RMSD threshold for pruning
   use_random_coords: false
-  optimize_mmff: true      # No MMFF optimization
+  optimize_mmff: true     # No MMFF optimization
   random_seed_gen: 42
 
 # SchNet model settings
@@ -63,7 +64,7 @@ schnet:
   n_interactions: 6        # Number of interaction blocks
   n_rbf: 50                # Number of radial basis functions
   cutoff: 5.0              # Cutoff distance (Angstrom)
-  n_filters: 128           # Number of filters in continuous-filter conv
+  n_filters: 100           # Number of filters in continuous-filter conv
   atomref: null             # Atomic reference energies (null = learn from data)
 
 # Training settings (Step 1 - SGD baseline)
@@ -83,18 +84,18 @@ training:
 eggroll:
   population_size: 32
   rank: 4
-  sigma: 0.001
-  learning_rate: 0.01
+  sigma: 0.01
+  learning_rate: 0.1
   num_generations: 400
   use_antithetic: true
   normalize_fitness: true
   rank_transform: true
   centered_rank: true
   weight_decay: 0.0
-  lr_decay: 0.999
-  sigma_decay: 0.999
+  lr_decay: 0.99
+  sigma_decay: 0.99
   patience: 150
-  eval_every: 10
+  eval_every: 5
 
 # GP settings (Step 3 - symbolic head)
 gp:

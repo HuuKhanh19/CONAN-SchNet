@@ -17,20 +17,17 @@ from src.models.schnet import build_schnet_model
 from src.trainers.step1_trainer import Step1Trainer
 from src.utils.utils import seed_everything
 
-
 def run_step1(config: dict, device: torch.device):
     dataset_name = config['dataset']['name']
-
     train_seed = config['random_seed_train']
     seed_everything(train_seed)
-    print(f"random_seed_train: {train_seed}")
-
     print(f"\n{'='*60}")
     print(f"Step 1: SchNet Baseline - {dataset_name.upper()}")
     print(f"{'='*60}")
-
-    processed_dir = config['data']['processed_dir']
-    ds_dir = os.path.join(processed_dir, dataset_name)
+    base_dir = config['data']['processed_dir']
+    seed = config['data']['random_seed_split']
+    ds_dir = f"{base_dir}/{dataset_name}/seed_{seed}"
+    print(ds_dir)
 
     if os.path.exists(os.path.join(ds_dir, 'train.csv')):
         print(f"Loading preprocessed data from {ds_dir}")
@@ -40,13 +37,16 @@ def run_step1(config: dict, device: torch.device):
     else:
         print("Preprocessed data not found, running preprocessing...")
         train_df, valid_df, test_df = prepare_dataset(config)
-        save_splits(config, train_df, valid_df, test_df)
+        save_splits(train_df, valid_df, test_df, ds_dir, dataset_name)
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
+    # print(0)
 
     train_loader, valid_loader, test_loader = create_dataloaders(config, train_df, valid_df, test_df)
 
+    # print(1)
     model = build_schnet_model(config)
+    # print(2)
     print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -55,8 +55,11 @@ def run_step1(config: dict, device: torch.device):
         f"step1_{dataset_name}_{timestamp}",
     )
 
+    # print(3)
     trainer = Step1Trainer(model=model, config=config, device=device, experiment_dir=exp_dir)
+    # print(4)
     results = trainer.train(train_loader, valid_loader, test_loader)
+    # print(5)
     print(f"\nResults saved to: {exp_dir}")
     return results
 
@@ -74,10 +77,10 @@ def main(cfg: DictConfig):
     config['dataset'] = config['datasets'][dataset_name]
 
     # Device
-    gpu = cfg.get('gpu')
+    gpu = cfg.get('gpu', 0)
     if torch.cuda.is_available() and gpu >= 0:
         device = torch.device(f"cuda:{gpu}")
-        print(f"Using GPU: {torch.cuda.get_device_name(device)} --gpu={gpu}")
+        print(f"Using GPU: {torch.cuda.get_device_name(device)}")
     else:
         device = torch.device("cpu")
         print("Using CPU")

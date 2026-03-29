@@ -260,6 +260,7 @@ def inner_smi2coords(
         # check this code
         if prune_conf:
             ps.pruneRmsThresh = float(pruneRmsThresh)
+        # print(list(AllChem.EmbedMultipleConfs(m, numConfs=int(n_confs), params=ps)))
         return list(AllChem.EmbedMultipleConfs(m, numConfs=int(n_confs), params=ps))
     try:
         work_mol_no_H = Chem.MolFromSmiles(smi)
@@ -293,7 +294,11 @@ def inner_smi2coords(
 
     # 1) quick single conformer
     conf_ids = _embed_with_params(work_mol, n_confs=n_confs, use_random=False, max_attempts=200)
+    # for cid in conf_ids:
+    #     pos = work_mol.GetConformer(cid).GetPositions()
+    # print(conf_ids)
     # print(f'Generated {len(conf_ids)} conformers for SMILES: {smi}')
+    # print(1)
 
     # 2) few conformers, same seed
     if len(conf_ids) == 0 and mode in ('heavy', 'fast'):
@@ -318,6 +323,7 @@ def inner_smi2coords(
     # Build atom symbols from ORIGINAL molecule (before capping),
     # so we know which were '*' and can drop them deterministically.
     orig_atoms = [a.GetSymbol() for a in work_mol.GetAtoms()]
+    #print(orig_atoms)
     keep_idx = [i for i, sym in enumerate(orig_atoms) if sym != '*']
     atoms = [sym for sym in orig_atoms if sym != '*']
     
@@ -360,7 +366,7 @@ def inner_smi2coords(
         all_confs_coords.append(coords)
         all_energies.append(np.inf)
     
-    
+    # print(all_confs_coords[4].shape)
     # Make sure shape matches: coordinates array should be at least the original core atoms count.
     all_confs_coords_new = []
     all_energies_new = []
@@ -377,6 +383,7 @@ def inner_smi2coords(
         if np.isfinite(arr).any():
             arr = arr - np.nanmin(arr)
         return [atoms], all_confs_coords_new, arr.tolist()
+    # print(all_confs_coords_new[2].shape)
 
     return [atoms], all_confs_coords_new
 
@@ -426,7 +433,7 @@ def coords2unimol(
     """
     # print(atoms[0])
     if atoms[0] is None or coordinates_list[0] is None:
-        print(atoms[0], coordinates_list[0])
+        #print(atoms[0], coordinates_list[0])
         return [{
             'src_tokens': np.zeros((max_atoms + 2,), dtype=int),
             'src_distance': np.zeros((max_atoms + 2, max_atoms + 2), dtype=np.float32),

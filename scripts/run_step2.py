@@ -12,7 +12,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.data.data_loader import prepare_dataset, save_splits, create_dataloaders
-from src.models.schnet import build_schnet_model
+from src.models.schnet_wrapper import build_schnet_model
 from src.trainers.step2_trainer import Step2Trainer
 
 
@@ -38,7 +38,9 @@ def run_step2(config: dict, device: torch.device):
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
-    train_loader, valid_loader, test_loader = create_dataloaders(config, train_df, valid_df, test_df)
+    train_loader, valid_loader, test_loader = create_dataloaders(
+        train_df, valid_df, test_df, config, dataset_name,
+    )
 
     model = build_schnet_model(config)
     print(f"Model: {model.num_params:,} params")

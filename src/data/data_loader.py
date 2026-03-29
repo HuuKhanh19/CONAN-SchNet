@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Dict, Any, Optional, Tuple, List
 
-from .splitters import random_split, random_scaffold_split
+from .splitter import random_split, random_scaffold_split
 from .conformer import inner_smi2coords
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def preprocess_dataframe(
 def prepare_dataset(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict]:
     random_seed_split = config['data']['random_seed_split']
     split_type = config['data']['split_method']
-    print(f"Preparing dataset with split method: {split_type}, random_seed_split: {random_seed_split}")
+    print(f"Preparing dataset with split method: {split_type}, random_seed: {random_seed_split}")
 
     raw_dir = config['data']['raw_dir']
     filename = config['dataset']['file']
@@ -136,18 +136,17 @@ def prepare_dataset(config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     print(f"After preprocessing: {len(df)} molecules")
 
     if split_type=="random":
-        train_df, valid_df, test_df = random_split(df, random_seed = random_seed_split, ratio_test= 0.1, ration_valid= 0.1)
+        train_df, valid_df, test_df = random_split(df, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed_split)
     elif split_type=="random_scaffold":
-        train_df, valid_df, test_df = random_scaffold_split(df, df['smiles'].values, random_seed = random_seed_split, ratio_test= 0.1, ration_valid= 0.1, dataframe=True)
+        train_df, valid_df, test_df = random_scaffold_split(df, df['smiles'].values, ratio_test= 0.1, ration_valid= 0.1, random_seed = random_seed_split, dataframe=True)
     print(f"Split: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
     return train_df, valid_df, test_df
 
 
-def save_splits(config: Dict, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame):
-    output_dir = config['data']['processed_dir']
-    dataset_name = config['dataset']['name']
-    ds_dir = os.path.join(output_dir, dataset_name)
+
+def save_splits(train_df, valid_df, test_df, output_dir):
+    ds_dir = os.path.join(output_dir)
     os.makedirs(ds_dir, exist_ok=True)
     train_df.to_csv(os.path.join(ds_dir, 'train.csv'), index=False)
     valid_df.to_csv(os.path.join(ds_dir, 'valid.csv'), index=False)
@@ -158,70 +157,91 @@ def save_splits(config: Dict, train_df: pd.DataFrame, valid_df: pd.DataFrame, te
 # ---------------------------------------------------------------------------
 # SchNet Dataset (PyTorch)
 # ---------------------------------------------------------------------------
-
 class SchNetMolDataset(Dataset):
-    """
-    PyTorch Dataset that provides (atomic_numbers, positions, target)
-    with conformers generated via RDKit and cached to disk.
-    """
-
-    def __init__(
-        self,
-        config: Dict,
-        df: pd.DataFrame,
-        cache_path: Optional[str] = None
-    ):
-        self.random_seed_gen = config['conformer']['random_seed_gen'] 
-        self.num_conformers = config['conformer']['num_conformers'] 
+    def __init__(self, config, df, cache_path=None):
+        self.random_seed_gen = config['conformer']['random_seed_gen']
+        self.num_conformers = config['conformer']['num_conformers']
         self.optimize_mmff = config['conformer']['optimize_mmff']
+
         self.smiles = df['smiles'].tolist()
         self.targets = df['target'].values.astype(np.float32)
 
-        # Try loading cache
+        self.atomic_numbers = []
+        self.positions = []
+
         if cache_path and os.path.exists(cache_path):
             print(f"  Loading conformer cache: {cache_path}")
-            with open(cache_path, 'rb') as f:
+            with open(cache_path, "rb") as f:
                 cache = pickle.load(f)
-            self.atomic_numbers = cache['atomic_numbers']
-            self.positions = cache['positions']
+            self.atomic_numbers = cache["atomic_numbers"]
+            self.positions = cache["positions"]
+
         else:
             print(f"  Generating conformers for {len(self.smiles)} molecules...")
-            print(f"Random_seed_gen = {self.random_seed_gen}")
             from rdkit.Chem import GetPeriodicTable
             pt = GetPeriodicTable()
-            self.atomic_numbers, self.positions = [], []
+
             for i, smi in enumerate(self.smiles):
                 atoms_list, coords_list = inner_smi2coords(
-                    smi=smi, seed=self.random_seed_gen, mode='fast',
-                    optimize=self.optimize_mmff, n_confs=self.num_conformers,
+                    smi=smi,
+                    seed=self.random_seed_gen,
+                    mode='fast',
+                    optimize=self.optimize_mmff,
+                    n_confs=self.num_conformers,
                 )
-                if atoms_list[0] is None or len(atoms_list[0]) == 0:
+
+                if (
+                    atoms_list is None or len(atoms_list) == 0 or
+                    atoms_list[0] is None or len(atoms_list[0]) == 0 or
+                    coords_list is None or len(coords_list) == 0
+                ):
                     self.atomic_numbers.append(None)
                     self.positions.append(None)
                 else:
-                    self.atomic_numbers.append(
-                        np.array([pt.GetAtomicNumber(s) for s in atoms_list[0]], dtype=np.int64)
+                    z = np.array(
+                        [pt.GetAtomicNumber(s) for s in atoms_list[0]],
+                        dtype=np.int64
                     )
-                    self.positions.append(coords_list[0])  # best conformer (lowest energy)
-                    # self.positions.append(coords_list)
+                    n_atoms = len(z)
+
+                    valid_coords = []
+                    for conf in coords_list:
+                        conf = np.asarray(conf, dtype=np.float32)
+                        if conf.ndim == 2 and conf.shape == (n_atoms, 3):
+                            valid_coords.append(conf)
+
+                    if len(valid_coords) == 0:
+                        self.atomic_numbers.append(None)
+                        self.positions.append(None)
+                    else:
+                        # shape: (k, n_atoms, 3)
+                        pos = np.stack(valid_coords, axis=0)
+                        self.atomic_numbers.append(z)
+                        self.positions.append(pos)
+
                 if (i + 1) % 100 == 0:
                     print(f"  Conformer generation: {i+1}/{len(self.smiles)}")
-            failed = None  # không cần track riêng, filter ở bước dưới
-        
+
             if cache_path:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                with open(cache_path, 'wb') as f:
-                    pickle.dump({
-                        'atomic_numbers': self.atomic_numbers,
-                        'positions': self.positions,
-                    }, f)
+                with open(cache_path, "wb") as f:
+                    pickle.dump(
+                        {
+                            "atomic_numbers": self.atomic_numbers,
+                            "positions": self.positions,
+                        },
+                        f
+                    )
                 print(f"  Saved conformer cache: {cache_path}")
 
-        # Filter out failed molecules
-        valid_mask = [z is not None for z in self.atomic_numbers]
+        valid_mask = [
+            z is not None and p is not None
+            for z, p in zip(self.atomic_numbers, self.positions)
+        ]
         if not all(valid_mask):
             n_fail = sum(1 for v in valid_mask if not v)
             print(f"  WARNING: {n_fail} molecules failed conformer generation, removing")
+
             self.smiles = [s for s, v in zip(self.smiles, valid_mask) if v]
             self.targets = self.targets[valid_mask]
             self.atomic_numbers = [z for z, v in zip(self.atomic_numbers, valid_mask) if v]
@@ -231,20 +251,83 @@ class SchNetMolDataset(Dataset):
         return len(self.smiles)
 
     def __getitem__(self, idx):
+        z = torch.from_numpy(self.atomic_numbers[idx])      # (n_atoms,)
+        pos = torch.from_numpy(self.positions[idx])         # (k, n_atoms, 3)
+        y = torch.tensor(self.targets[idx], dtype=torch.float32)
+
         return {
-            'atomic_numbers': torch.from_numpy(self.atomic_numbers[idx]),   # (n_atoms,)
-            'positions': torch.from_numpy(self.positions[idx]),             # (n_atoms, 3)
-            'target': torch.tensor(self.targets[idx], dtype=torch.float32), # scalar
+            "atomic_numbers": z,
+            "positions": pos,
+            "target": y,
+            "num_atoms": torch.tensor(z.shape[0], dtype=torch.long),
+            "num_conformers": torch.tensor(pos.shape[0], dtype=torch.long),
         }
-    
-    # def __getitem__(self, idx):
-    #     return {
-    #         'atomic_numbers': torch.from_numpy(self.atomic_numbers[idx]),   # (n_atoms,)
-    #         'positions': [torch.from_numpy(p) for p in self.positions[idx]], # list of K (n_atoms, 3)
-    #         'target': torch.tensor(self.targets[idx], dtype=torch.float32),
-    #     }
+def collate_multi_conformer(batch):
+    """
+    batch: list of dataset items
+    Each item:
+        atomic_numbers: (n_atoms,)
+        positions: (k, n_atoms, 3)
 
+    Return:
+        _atomic_numbers:   (total_atoms_all_confs,)
+        _positions:        (total_atoms_all_confs, 3)
+        _idx_atom_to_conf: (total_atoms_all_confs,)
+        _idx_conf_to_mol:  (total_num_confs,)
+        target:            (batch_size,)
+        num_atoms_per_mol: (batch_size,)
+        num_confs_per_mol: (batch_size,)
+    """
+    atomic_numbers_all = []
+    positions_all = []
+    atom_to_conf_all = []
+    conf_to_mol_all = []
 
+    targets = []
+    num_atoms_per_mol = []
+    num_confs_per_mol = []
+
+    conf_global_idx = 0
+
+    for mol_idx, item in enumerate(batch):
+        z = item["atomic_numbers"]    # (n_atoms,)
+        pos = item["positions"]       # (k, n_atoms, 3)
+        y = item["target"]
+
+        n_atoms = z.shape[0]
+        k = pos.shape[0]
+
+        num_atoms_per_mol.append(n_atoms)
+        num_confs_per_mol.append(k)
+        targets.append(y)
+
+        for conf_idx in range(k):
+            atomic_numbers_all.append(z)          # repeat same atom types for each conformer
+            positions_all.append(pos[conf_idx])   # (n_atoms, 3)
+
+            atom_to_conf_all.append(
+                torch.full((n_atoms,), conf_global_idx, dtype=torch.long)
+            )
+            conf_to_mol_all.append(mol_idx)
+            conf_global_idx += 1
+
+    atomic_numbers_all = torch.cat(atomic_numbers_all, dim=0)           # (sum_i k_i*n_i,)
+    positions_all = torch.cat(positions_all, dim=0)                     # (sum_i k_i*n_i, 3)
+    atom_to_conf_all = torch.cat(atom_to_conf_all, dim=0)               # (sum_i k_i*n_i,)
+    conf_to_mol_all = torch.tensor(conf_to_mol_all, dtype=torch.long)   # (sum_i k_i,)
+    targets = torch.stack(targets, dim=0)                               # (batch_size,)
+    num_atoms_per_mol = torch.tensor(num_atoms_per_mol, dtype=torch.long)
+    num_confs_per_mol = torch.tensor(num_confs_per_mol, dtype=torch.long)
+
+    return {
+        "_atomic_numbers": atomic_numbers_all,
+        "_positions": positions_all,
+        "_idx_atom_to_conf": atom_to_conf_all,
+        "_idx_conf_to_mol": conf_to_mol_all,
+        "target": targets,
+        "num_atoms_per_mol": num_atoms_per_mol,
+        "num_confs_per_mol": num_confs_per_mol,
+    }
 def collate_schnet(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """
     Collate variable-size molecules into a single batch.
@@ -272,47 +355,6 @@ def collate_schnet(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'target': torch.stack(all_target),                     # (batch_size,)
     }
 
-# def collate_schnet(batch: List[Dict]) -> Dict[str, torch.Tensor]:
-#     """
-#     Với K conformers per molecule, batch_size = B:
-#     - Treat mỗi (molecule, conformer) như 1 sample riêng
-#     - Thêm conf_batch_idx để biết conformer nào thuộc molecule nào
-#     """
-#     all_z = []
-#     all_pos = []
-#     all_target = []
-#     all_mol_idx = []    # atom → molecule index (0..B-1)
-#     all_conf_idx = []   # atom → (molecule, conformer) index (0..B*K-1)
-#     all_n_atoms = []
-
-#     conf_sample_idx = 0  # global index cho từng (mol, conf) pair
-
-#     for mol_idx, sample in enumerate(batch):
-#         z = sample['atomic_numbers']          # (n_atoms,)
-#         positions_list = sample['positions']  # list of K tensors (n_atoms, 3)
-#         n = z.shape[0]
-#         K = len(positions_list)
-
-#         for k, pos in enumerate(positions_list):
-#             all_z.append(z)
-#             all_pos.append(pos)                             # (n_atoms, 3)
-#             all_mol_idx.append(torch.full((n,), mol_idx, dtype=torch.long))
-#             all_conf_idx.append(torch.full((n,), conf_sample_idx, dtype=torch.long))
-#             all_n_atoms.append(n)
-#             conf_sample_idx += 1
-
-#         all_target.append(sample['target'])
-
-#     return {
-#         '_atomic_numbers': torch.cat(all_z),           # (B*K*n_atoms,)
-#         '_positions': torch.cat(all_pos),               # (B*K*n_atoms, 3)
-#         '_idx_m': torch.cat(all_conf_idx),              # (B*K*n_atoms,) — dùng để radius_graph
-#         '_idx_mol': torch.cat(all_mol_idx),             # (B*K*n_atoms,) — dùng để pool về molecule
-#         '_n_atoms': torch.tensor(all_n_atoms, dtype=torch.long),  # (B*K,)
-#         '_n_conformers': torch.tensor([len(s['positions']) for s in batch], dtype=torch.long),  # (B,)
-#         'target': torch.stack(all_target),              # (B,)
-#     }
-
 
 def create_dataloaders(
     config: Dict,
@@ -322,7 +364,15 @@ def create_dataloaders(
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Create train/valid/test DataLoaders with conformer caching."""
     dataset_name = config['dataset']['name']
-    cache_dir = os.path.join(config['data']['processed_dir'], dataset_name, 'conformers')
+    seed = config['data']['random_seed_split']
+    conformer = config['conformer']['num_conformers']
+
+    cache_dir = os.path.join(
+        config['data']['processed_dir'],
+        dataset_name,
+        f"seed_{seed}",
+        f"{conformer}_conformers"
+    )
     conf_cfg = config.get('conformer', {})
 
     datasets = {}
@@ -337,14 +387,16 @@ def create_dataloaders(
     bs = config['training']['batch_size']
     train_loader = DataLoader(
         datasets['train'], batch_size=bs, shuffle=True,
-        collate_fn=collate_schnet, num_workers=0, pin_memory=True,
+        collate_fn=collate_multi_conformer, num_workers=0, pin_memory=True,
     )
     valid_loader = DataLoader(
         datasets['valid'], batch_size=bs, shuffle=False,
-        collate_fn=collate_schnet, num_workers=0, pin_memory=True,
+        collate_fn=collate_multi_conformer, num_workers=0, pin_memory=True,
     )
     test_loader = DataLoader(
         datasets['test'], batch_size=bs, shuffle=False,
-        collate_fn=collate_schnet, num_workers=0, pin_memory=True,
+        collate_fn=collate_multi_conformer, num_workers=0, pin_memory=True,
     )
+    
+    
     return train_loader, valid_loader, test_loader
