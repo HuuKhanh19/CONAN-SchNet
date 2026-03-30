@@ -1,11 +1,3 @@
-"""
-Step 2 Trainer: SchNet + EGGROLL (Evolution Strategies).
-
-Replace SGD with EGGROLL for training SchNet from scratch.
-Uses full-batch evaluation for fitness computation.
-Supports regression (RMSE/MAE) and classification (AUC).
-"""
-
 import os
 import time
 import json
@@ -20,7 +12,7 @@ from src.optimizers.eggroll import EGGROLL, EGGROLLConfig
 
 
 class Step2Trainer:
-    """EGGROLL Evolution Strategies trainer for SchNet."""
+    """EGGROLL Evolution Strategies trainer cho SchNet."""
 
     def __init__(
         self,
@@ -45,22 +37,22 @@ class Step2Trainer:
         self.eval_every = ecfg.get('eval_every', 5)
 
         eggroll_config = EGGROLLConfig(
-            population_size=ecfg.get('population_size', 128),
-            rank=ecfg.get('rank', 1),
-            sigma=ecfg.get('sigma', 0.01),
-            learning_rate=ecfg.get('learning_rate', 0.1),
+            population_size=ecfg.get('population_size', 32),
+            rank=ecfg.get('rank', 4),
+            sigma=ecfg.get('sigma', 0.001),
+            learning_rate=ecfg.get('learning_rate', 0.01),
             num_generations=self.num_generations,
             use_antithetic=ecfg.get('use_antithetic', True),
             normalize_fitness=ecfg.get('normalize_fitness', True),
             rank_transform=ecfg.get('rank_transform', True),
             centered_rank=ecfg.get('centered_rank', True),
             weight_decay=ecfg.get('weight_decay', 0.0),
-            lr_decay=ecfg.get('lr_decay', 0.99),
-            sigma_decay=ecfg.get('sigma_decay', 0.99),
+            lr_decay=ecfg.get('lr_decay', 0.999),
+            sigma_decay=ecfg.get('sigma_decay', 0.999),
             seed=config['data'].get('random_seed', 42),
         )
 
-        # Create EGGROLL optimizer (holds reference to model)
+        # Create EGGROLL optimizer
         self.eggroll = EGGROLL(model, eggroll_config, device=device)
         self.eggroll_config = eggroll_config
 
@@ -74,64 +66,55 @@ class Step2Trainer:
     # Data helpers
     # ------------------------------------------------------------------
 
-    def collect_full_batch(self, loader: DataLoader) -> Dict[str, torch.Tensor]:
-        """Concat all mini-batches into a single batch on device.
-
-        The _idx_m (molecule batch index) is re-indexed so that molecule
-        indices are globally unique across the merged batch.
+    def collect_full_batch_list(self, loader: DataLoader) -> list:
         """
-        all_z, all_pos, all_idx_m, all_n_atoms, all_target = [], [], [], [], []
-        mol_offset = 0
-
+        Lưu sẵn các mini-batch vào list trên RAM hệ thống (CPU).
+        Điều này giúp vòng lặp fitness chạy cực nhanh mà không bị overhead của DataLoader,
+        đồng thời khi forward pass mới đẩy từng batch lên GPU để tránh OOM.
+        """
+        cached_batches = []
         for batch in loader:
-            bs = batch['_n_atoms'].shape[0]
-            all_z.append(batch['_atomic_numbers'])
-            all_pos.append(batch['_positions'])
-            all_idx_m.append(batch['_idx_m'] + mol_offset)
-            all_n_atoms.append(batch['_n_atoms'])
-            all_target.append(batch['target'])
-            mol_offset += bs
-
-        merged = {
-            '_atomic_numbers': torch.cat(all_z).to(self.device),
-            '_positions': torch.cat(all_pos).to(self.device),
-            '_idx_m': torch.cat(all_idx_m).to(self.device),
-            '_n_atoms': torch.cat(all_n_atoms).to(self.device),
-            'target': torch.cat(all_target).to(self.device),
-        }
-        return merged
+            cached_batches.append(batch)
+        return cached_batches
 
     # ------------------------------------------------------------------
     # Fitness function
     # ------------------------------------------------------------------
 
-    def _make_fitness_fn(self) -> Callable:
-        """Build the fitness function passed to EGGROLL.step().
-
-        For regression:  fitness = -RMSE  (higher is better)
-        For classification: fitness = AUC  (higher is better)
-
-        The function receives (model, data) where *model* has already
-        been perturbed by EGGROLL and *data* is the full training batch.
+    def _make_fitness_fn(self, cached_batches: list) -> Callable:
+        """
+        Hàm tính Fitness theo cơ chế Full-Batch (duyệt qua list các mini-batch).
         """
         task_type = self.task_type
 
-        def fitness_fn(model: nn.Module, data: Dict[str, torch.Tensor]) -> float:
-            # Separate inputs from target
-            input_data = {k: v for k, v in data.items() if k != 'target'}
-            target = data['target']
+        def fitness_fn(model: nn.Module, data: Any = None) -> float:
+            model.eval()
+            all_preds = []
+            all_targets = []
 
-            output = model(input_data)
-            pred = output['prediction']
+            with torch.no_grad():
+                for batch in cached_batches:
+                    # Đẩy data lên GPU on-the-fly để tiết kiệm tối đa VRAM
+                    batch_device = {k: v.to(self.device) for k, v in batch.items()}
+                    target = batch_device.pop('target')
+
+                    # Tắt return_embedding để giảm tải bộ nhớ
+                    output = model(batch_device, return_embedding=False)
+                    all_preds.append(output['prediction'])
+                    all_targets.append(target)
+
+            # Gom toàn bộ dự đoán để tính fitness 1 lần duy nhất
+            pred = torch.cat(all_preds)
+            target = torch.cat(all_targets)
 
             if task_type == 'regression':
                 rmse = torch.sqrt(torch.mean((pred - target) ** 2)).item()
-                return -rmse                       # higher is better
+                return -rmse  # EGGROLL maximize fitness
             else:
                 try:
                     auc = roc_auc_score(
-                        target.detach().cpu().numpy(),
-                        pred.detach().cpu().numpy(),
+                        target.cpu().numpy(),
+                        pred.cpu().numpy(),
                     )
                     return float(auc)
                 except ValueError:
@@ -140,7 +123,7 @@ class Step2Trainer:
         return fitness_fn
 
     # ------------------------------------------------------------------
-    # Evaluation (same logic as Step 1, mini-batch)
+    # Evaluation (Validation / Test)
     # ------------------------------------------------------------------
 
     @torch.no_grad()
@@ -152,10 +135,10 @@ class Step2Trainer:
         n_samples = 0
 
         for batch in loader:
-            batch = {k: v.to(self.device) for k, v in batch.items()}
-            target = batch.pop('target')
+            batch_device = {k: v.to(self.device) for k, v in batch.items()}
+            target = batch_device.pop('target')
 
-            output = self.model(batch)
+            output = self.model(batch_device, return_embedding=False)
             pred = output['prediction']
 
             if self.task_type == 'regression':
@@ -209,14 +192,12 @@ class Step2Trainer:
               f"eval_every: {self.eval_every}")
         print("-" * 70)
 
-        # --- Collect full training batch ----------------------------------
-        print("Collecting full training batch ...")
-        full_batch = self.collect_full_batch(train_loader)
-        n_train = full_batch['target'].shape[0]
-        n_atoms = full_batch['_atomic_numbers'].shape[0]
-        print(f"  {n_train} molecules, {n_atoms} atoms total on {self.device}")
-
-        fitness_fn = self._make_fitness_fn()
+        # Cache dữ liệu lên RAM CPU một lần duy nhất
+        print("Caching training batches to memory (CPU) to prevent DataLoader overhead ...")
+        cached_train_batches = self.collect_full_batch_list(train_loader)
+        
+        # Tạo hàm fitness
+        fitness_fn = self._make_fitness_fn(cached_train_batches)
 
         # --- Initial evaluation -------------------------------------------
         val_metrics = self.evaluate(valid_loader)
@@ -232,8 +213,8 @@ class Step2Trainer:
         for gen in range(1, self.num_generations + 1):
             gen_start = time.time()
 
-            # --- EGGROLL step ---------------------------------------------
-            stats = self.eggroll.step(fitness_fn, data=full_batch)
+            # --- EGGROLL step ---
+            stats = self.eggroll.step(fitness_fn, data=None)
 
             gen_time = time.time() - gen_start
 

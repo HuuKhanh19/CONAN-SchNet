@@ -19,14 +19,17 @@ from src.utils.utils import seed_everything
 
 def run_step1(config: dict, device: torch.device):
     dataset_name = config['dataset']['name']
+
     train_seed = config['random_seed_train']
     seed_everything(train_seed)
+    print(f"random_seed_train={train_seed}")
+
     print(f"\n{'='*60}")
     print(f"Step 1: SchNet Baseline - {dataset_name.upper()}")
     print(f"{'='*60}")
     base_dir = config['data']['processed_dir']
-    seed = config['data']['random_seed_split']
-    ds_dir = f"{base_dir}/{dataset_name}/seed_{seed}"
+    split_seed = config['data']['random_seed_split']
+    ds_dir = f"{base_dir}/{dataset_name}/seed_{split_seed}"
     print(ds_dir)
 
     if os.path.exists(os.path.join(ds_dir, 'train.csv')):
@@ -40,26 +43,34 @@ def run_step1(config: dict, device: torch.device):
         save_splits(train_df, valid_df, test_df, ds_dir, dataset_name)
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
-    # print(0)
 
     train_loader, valid_loader, test_loader = create_dataloaders(config, train_df, valid_df, test_df)
 
-    # print(1)
     model = build_schnet_model(config)
-    # print(2)
+    
+        # --- THÊM ĐOẠN NÀY VÀO ---
+    print("\n" + "="*60)
+    print("MODEL PARAMETER SHAPES")
+    print("="*60)
+    total_params = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            shape_str = str(list(param.shape))
+            print(f"Layer: {name: <50} | Shape: {shape_str: <20} | Params: {param.numel():,}")
+            total_params += param.numel()
+    print("="*60)
+    print(f"Total Trainable Parameters: {total_params:,}\n")
+    # -------------------------
+    
     print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
     exp_dir = os.path.join(
         config['experiment']['output_dir'],
-        f"step1_{dataset_name}_{timestamp}",
+        f"step1/{dataset_name}/seed_{split_seed}",
     )
 
-    # print(3)
     trainer = Step1Trainer(model=model, config=config, device=device, experiment_dir=exp_dir)
-    # print(4)
     results = trainer.train(train_loader, valid_loader, test_loader)
-    # print(5)
     print(f"\nResults saved to: {exp_dir}")
     return results
 

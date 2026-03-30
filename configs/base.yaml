@@ -8,6 +8,11 @@ dataset_name: esol
 random_seed_train: 0
 gpu: 1
 
+# Experiment settings
+experiment:
+  output_dir: "experiments"
+  log_level: "INFO"
+
 # Dataset configs 
 datasets:
   esol:
@@ -64,7 +69,7 @@ schnet:
   n_interactions: 6        # Number of interaction blocks
   n_rbf: 50                # Number of radial basis functions
   cutoff: 5.0              # Cutoff distance (Angstrom)
-  n_filters: 100           # Number of filters in continuous-filter conv
+  n_filters: 128           # Number of filters in continuous-filter conv
   atomref: null             # Atomic reference energies (null = learn from data)
 
 # Training settings (Step 1 - SGD baseline)
@@ -82,52 +87,17 @@ training:
 
 # EGGROLL settings (Step 2 & Step 3 backbone)
 eggroll:
-  population_size: 32
-  rank: 4
+  population_size: 128
+  rank: 1
   sigma: 0.01
   learning_rate: 0.1
-  num_generations: 400
+  num_generations: 600
   use_antithetic: true
   normalize_fitness: true
   rank_transform: true
   centered_rank: true
   weight_decay: 0.0
-  lr_decay: 0.99
-  sigma_decay: 0.99
-  patience: 150
+  lr_decay: 0.98
+  sigma_decay: 0.98
+  patience: 200
   eval_every: 5
-
-# GP settings (Step 3 - symbolic head)
-gp:
-  population_size: 200       # N2 = number of GP trees
-  max_tree_len: 63          # 2^5 - 1, for max_layer_cnt=5 (FIX 2: reduced)
-  max_layer_cnt: 6          # Moderate depth to prevent overfitting
-  layer_leaf_prob: 0.3
-  input_dim: 128            # SchNet embedding dimension
-  output_dim: 1
-  using_funcs:              # FIX 3: No exp — causes Inf explosions
-    - '+'
-    - '-'
-    - '*'
-    - 'loose_div'
-    - 'sin'
-    - 'cos'
-    - 'neg'
-    - 'abs'
-    - 'tanh'
-    - 'loose_sqrt'
-  const_range: [-1.0, 1.0]
-  sample_cnt: 1000
-  crossover_rate: 0.8
-  mutation_rate: 0.2
-  tournament_size: 5
-  elitism: 3
-
-# Step 3 specific settings
-step3:
-  warmup_generations: 50    # FIX 4: GP-only warmup before co-evolution
-
-# Experiment settings
-experiment:
-  output_dir: "experiments"
-  log_level: "INFO"

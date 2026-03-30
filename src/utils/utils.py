@@ -19,13 +19,13 @@ def seed_everything(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
-    # 4. FIX MỚI CHO GNN/CUDA: Ép các phép toán scatter_add chạy cố định
-    # Biến môi trường này phải được set trước khi CUDA khởi tạo cuBLAS
-    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+    # # 4. FIX MỚI CHO GNN/CUDA: Ép các phép toán scatter_add chạy cố định
+    # # Biến môi trường này phải được set trước khi CUDA khởi tạo cuBLAS
+    # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     
-    # Bật chế độ deterministic của PyTorch (warn_only=True để tránh crash nếu có hàm chưa hỗ trợ)
-    try:
-        torch.use_deterministic_algorithms(True, warn_only=True)
-    except TypeError:
-        # Fallback cho các bản PyTorch cũ không có tham số warn_only
-        torch.use_deterministic_algorithms(True)
+    # # Bật chế độ deterministic của PyTorch (warn_only=True để tránh crash nếu có hàm chưa hỗ trợ)
+    # try:
+    #     torch.use_deterministic_algorithms(True, warn_only=True)
+    # except TypeError:
+    #     # Fallback cho các bản PyTorch cũ không có tham số warn_only
+    #     torch.use_deterministic_algorithms(True)

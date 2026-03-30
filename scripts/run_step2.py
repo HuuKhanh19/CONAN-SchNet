@@ -6,27 +6,35 @@ import sys
 import time
 import torch
 import hydra
+import pandas as pd
 from omegaconf import DictConfig, OmegaConf
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.data.data_loader import prepare_dataset, save_splits, create_dataloaders
-from src.models.schnet_wrapper import build_schnet_model
+from src.models.schnet import build_schnet_model
 from src.trainers.step2_trainer import Step2Trainer
+from src.utils.utils import seed_everything
 
 
 def run_step2(config: dict, device: torch.device):
     dataset_name = config['dataset']['name']
+
+    train_seed = config['random_seed_train']
+    seed_everything(train_seed)
+    print(f"random_seed_train={train_seed}")
+
     print(f"\n{'='*60}")
     print(f"Step 2: SchNet + EGGROLL - {dataset_name.upper()}")
     print(f"{'='*60}")
 
-    processed_dir = config['data']['processed_dir']
-    ds_dir = os.path.join(processed_dir, dataset_name)
+    base_dir = config['data']['processed_dir']
+    split_seed = config['data']['random_seed_split']
+    ds_dir = f"{base_dir}/{dataset_name}/seed_{split_seed}"
+    print(ds_dir)
 
     if os.path.exists(os.path.join(ds_dir, 'train.csv')):
-        import pandas as pd
         print(f"Loading preprocessed data from {ds_dir}")
         train_df = pd.read_csv(os.path.join(ds_dir, 'train.csv'))
         valid_df = pd.read_csv(os.path.join(ds_dir, 'valid.csv'))
@@ -34,21 +42,35 @@ def run_step2(config: dict, device: torch.device):
     else:
         print("Preprocessed data not found, running preprocessing...")
         train_df, valid_df, test_df = prepare_dataset(config)
-        save_splits(train_df, valid_df, test_df, processed_dir, dataset_name)
+        save_splits(train_df, valid_df, test_df, ds_dir, dataset_name)
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
-    train_loader, valid_loader, test_loader = create_dataloaders(
-        train_df, valid_df, test_df, config, dataset_name,
-    )
+    train_loader, valid_loader, test_loader = create_dataloaders(config, train_df, valid_df, test_df)
 
     model = build_schnet_model(config)
+
     print(f"Model: {model.num_params:,} params")
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    model = build_schnet_model(config)
+
+    # --- THÊM ĐOẠN NÀY VÀO ---
+    print("\n" + "="*60)
+    print("MODEL PARAMETER SHAPES")
+    print("="*60)
+    total_params = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            shape_str = str(list(param.shape))
+            print(f"Layer: {name: <50} | Shape: {shape_str: <20} | Params: {param.numel():,}")
+            total_params += param.numel()
+    print("="*60)
+    print(f"Total Trainable Parameters: {total_params:,}\n")
+    # -------------------------
+
     exp_dir = os.path.join(
         config['experiment']['output_dir'],
-        f"step2_{dataset_name}_{timestamp}",
+        f"step2/{dataset_name}/seed_{split_seed}",
     )
 
     trainer = Step2Trainer(model=model, config=config, device=device, experiment_dir=exp_dir)
