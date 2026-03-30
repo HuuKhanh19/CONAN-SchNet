@@ -1,31 +1,47 @@
+"""Utility functions for CONAN-SchNet."""
+
 import os
 import random
 import numpy as np
 import torch
 
+
 def seed_everything(seed: int):
-    # 1. Khóa Python và Numpy
+    """Set all random seeds for reproducibility.
+    
+    Controls:
+        - Python's random module
+        - PYTHONHASHSEED environment variable
+        - NumPy's global random state
+        - PyTorch CPU & CUDA random states
+        - cuDNN deterministic mode
+    
+    Note:
+        When using DataLoader with num_workers > 0, each worker needs
+        its own seed via worker_init_fn. See get_worker_init_fn().
+    """
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
-    
-    # 2. Khóa PyTorch khởi tạo
+
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        
-    # 3. Ép CUDNN hoạt động ổn định
+
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def get_worker_init_fn(base_seed: int):
+    """Return a worker_init_fn for DataLoader reproducibility.
     
-    # # 4. FIX MỚI CHO GNN/CUDA: Ép các phép toán scatter_add chạy cố định
-    # # Biến môi trường này phải được set trước khi CUDA khởi tạo cuBLAS
-    # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
-    
-    # # Bật chế độ deterministic của PyTorch (warn_only=True để tránh crash nếu có hàm chưa hỗ trợ)
-    # try:
-    #     torch.use_deterministic_algorithms(True, warn_only=True)
-    # except TypeError:
-    #     # Fallback cho các bản PyTorch cũ không có tham số warn_only
-    #     torch.use_deterministic_algorithms(True)
+    Usage:
+        DataLoader(..., worker_init_fn=get_worker_init_fn(42))
+    """
+    def worker_init_fn(worker_id: int):
+        worker_seed = base_seed + worker_id
+        random.seed(worker_seed)
+        np.random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+    return worker_init_fn

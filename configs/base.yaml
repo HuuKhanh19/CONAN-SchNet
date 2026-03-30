@@ -1,19 +1,25 @@
-# Base configuration for CONAN-SchNet Project
+# =============================================================================
+# CONAN-SchNet: Base Configuration (Hydra)
+# =============================================================================
+# Override from CLI:
+#   python scripts/run_step1.py dataset_name=freesolv random_seed_train=42 gpu=0
+# =============================================================================
 
 defaults:
   - _self_
 
-# Chọn dataset để train, override từ CLI: dataset=esol
-dataset_name: esol
-random_seed_train: 0
-gpu: 1
+# ─── Global Settings ─────────────────────────────────────────────────────────
+dataset_name: esol            # Override: dataset_name=freesolv
+random_seed_train: 0          # Seed for training (model init, optimizer, shuffle)
+gpu: 0
 
-# Experiment settings
+# ─── Experiment ──────────────────────────────────────────────────────────────
 experiment:
   output_dir: "experiments"
   log_level: "INFO"
+  verbose: false              # Set true to print parameter shapes at startup
 
-# Dataset configs 
+# ─── Dataset Definitions ────────────────────────────────────────────────────
 datasets:
   esol:
     name: "esol"
@@ -47,32 +53,33 @@ datasets:
     task_type: "classification"
     metric: "auc"
 
+# ─── Data / Splitting ───────────────────────────────────────────────────────
 data:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
   split_method: "random_scaffold"
-  random_seed_split: 0
+  random_seed_split: 4        # Seed cho scaffold split (tách biệt khỏi training)
 
-# Conformer generation
+# ─── Conformer Generation ───────────────────────────────────────────────────
 conformer:
-  num_conformers: 1        # Single ETKDG conformer per molecule
-  max_attempts: 500        # Max ETKDG attempts
-  prune_rms_thresh: 0.0    # RMSD threshold for pruning
+  num_conformers: 1
+  max_attempts: 500
+  prune_rms_thresh: 0.0
   use_random_coords: false
-  optimize_mmff: true     # No MMFF optimization
-  random_seed_gen: 42
+  optimize_mmff: true
+  random_seed_gen: 42         # Seed cho ETKDG conformer generation
 
-# SchNet model settings
+# ─── SchNet Model ───────────────────────────────────────────────────────────
 schnet:
-  n_atom_basis: 128        # Embedding dimension
-  n_interactions: 6        # Number of interaction blocks
-  n_rbf: 50                # Number of radial basis functions
-  cutoff: 5.0              # Cutoff distance (Angstrom)
-  n_filters: 128           # Number of filters in continuous-filter conv
-  atomref: null             # Atomic reference energies (null = learn from data)
+  n_atom_basis: 128
+  n_interactions: 6
+  n_rbf: 50
+  cutoff: 5.0
+  n_filters: 128
+  atomref: null
 
-# Training settings (Step 1 - SGD baseline)
+# ─── Training (Step 1 – Adam baseline) ──────────────────────────────────────
 training:
   epochs: 300
   batch_size: 32
@@ -85,7 +92,7 @@ training:
   save_checkpoints: true
   gradient_clip: 1.0
 
-# EGGROLL settings (Step 2 & Step 3 backbone)
+# ─── EGGROLL (Step 2) ──────────────────────────────────────────────────────
 eggroll:
   population_size: 128
   rank: 1

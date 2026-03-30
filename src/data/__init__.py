@@ -5,13 +5,15 @@ from .data_loader import (
     prepare_dataset,
     save_splits,
     SchNetMolDataset,
-    collate_schnet,
+    collate_multi_conformer,
     create_dataloaders,
 )
 
 __all__ = [
-    'generate_scaffold_split',
     'inner_smi2coords',
-    'prepare_dataset', 'save_splits',
-    'SchNetMolDataset', 'collate_schnet', 'create_dataloaders',
+    'prepare_dataset',
+    'save_splits',
+    'SchNetMolDataset',
+    'collate_multi_conformer',
+    'create_dataloaders',
 ]

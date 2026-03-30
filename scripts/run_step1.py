@@ -1,9 +1,8 @@
 #!/usr/bin/env python
-"""Step 1: SchNet Baseline (SGD)"""
+"""Step 1: SchNet Baseline (Adam optimizer)."""
 
 import os
 import sys
-import time
 import torch
 import hydra
 import pandas as pd
@@ -17,9 +16,11 @@ from src.models.schnet import build_schnet_model
 from src.trainers.step1_trainer import Step1Trainer
 from src.utils.utils import seed_everything
 
+
 def run_step1(config: dict, device: torch.device):
     dataset_name = config['dataset']['name']
 
+    # ── Seed everything FIRST ────────────────────────────────────────────
     train_seed = config['random_seed_train']
     seed_everything(train_seed)
     print(f"random_seed_train={train_seed}")
@@ -27,10 +28,11 @@ def run_step1(config: dict, device: torch.device):
     print(f"\n{'='*60}")
     print(f"Step 1: SchNet Baseline - {dataset_name.upper()}")
     print(f"{'='*60}")
+
+    # ── Load or prepare data ─────────────────────────────────────────────
     base_dir = config['data']['processed_dir']
     split_seed = config['data']['random_seed_split']
     ds_dir = f"{base_dir}/{dataset_name}/seed_{split_seed}"
-    print(ds_dir)
 
     if os.path.exists(os.path.join(ds_dir, 'train.csv')):
         print(f"Loading preprocessed data from {ds_dir}")
@@ -40,36 +42,37 @@ def run_step1(config: dict, device: torch.device):
     else:
         print("Preprocessed data not found, running preprocessing...")
         train_df, valid_df, test_df = prepare_dataset(config)
-        save_splits(train_df, valid_df, test_df, ds_dir, dataset_name)
+        save_splits(train_df, valid_df, test_df, ds_dir)  # FIX: removed extra arg
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
-    train_loader, valid_loader, test_loader = create_dataloaders(config, train_df, valid_df, test_df)
+    train_loader, valid_loader, test_loader = create_dataloaders(
+        config, train_df, valid_df, test_df
+    )
 
+    # ── Build model (ONCE) ───────────────────────────────────────────────
     model = build_schnet_model(config)
-    
-        # --- THÊM ĐOẠN NÀY VÀO ---
-    print("\n" + "="*60)
-    print("MODEL PARAMETER SHAPES")
-    print("="*60)
-    total_params = 0
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            shape_str = str(list(param.shape))
-            print(f"Layer: {name: <50} | Shape: {shape_str: <20} | Params: {param.numel():,}")
-            total_params += param.numel()
-    print("="*60)
-    print(f"Total Trainable Parameters: {total_params:,}\n")
-    # -------------------------
-    
     print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
 
+    # Optional verbose parameter dump
+    if config.get('experiment', {}).get('verbose', False):
+        print("\n" + "=" * 60)
+        print("MODEL PARAMETER SHAPES")
+        print("=" * 60)
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"  {name:<50s} | {str(list(param.shape)):<20s} | {param.numel():,}")
+        print("=" * 60)
+
+    # ── Train ────────────────────────────────────────────────────────────
     exp_dir = os.path.join(
         config['experiment']['output_dir'],
         f"step1/{dataset_name}/seed_{split_seed}",
     )
 
-    trainer = Step1Trainer(model=model, config=config, device=device, experiment_dir=exp_dir)
+    trainer = Step1Trainer(
+        model=model, config=config, device=device, experiment_dir=exp_dir
+    )
     results = trainer.train(train_loader, valid_loader, test_loader)
     print(f"\nResults saved to: {exp_dir}")
     return results
@@ -79,10 +82,11 @@ def run_step1(config: dict, device: torch.device):
 def main(cfg: DictConfig):
     os.chdir(hydra.utils.get_original_cwd())
 
-    # Resolve dataset config
+    # Resolve dataset
     dataset_name = cfg.dataset_name
-    assert dataset_name in cfg.datasets, \
+    assert dataset_name in cfg.datasets, (
         f"Unknown dataset: {dataset_name}. Choose from: {list(cfg.datasets.keys())}"
+    )
 
     config = OmegaConf.to_container(cfg, resolve=True)
     config['dataset'] = config['datasets'][dataset_name]
