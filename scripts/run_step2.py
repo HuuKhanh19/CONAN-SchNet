@@ -6,7 +6,6 @@ import sys
 import torch
 import hydra
 import pandas as pd
-import time
 from omegaconf import DictConfig, OmegaConf
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -65,10 +64,9 @@ def run_step2(config: dict, device: torch.device):
         print("=" * 60)
 
     # ── Train ────────────────────────────────────────────────────────────
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
     exp_dir = os.path.join(
         config['experiment']['output_dir'],
-        f"step2/{dataset_name}/seed_{split_seed}/{timestamp}",
+        f"step2/{dataset_name}/seed_{split_seed}",
     )
 
     trainer = Step2Trainer(

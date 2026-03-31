@@ -28,26 +28,26 @@ class EGGROLLConfig:
     """Configuration for EGGROLL optimizer."""
 
     # Core hyperparameters
-    population_size: int = 128         # N: total perturbations per step
+    population_size: int = 32          # N: total perturbations per step
     rank: int = 4                      # r: rank of each perturbation
     sigma: float = 0.01               # σ: noise scale
-    learning_rate: float = 0.1        # α: step size
+    learning_rate: float = 0.001      # α: step size (scaled by √N internally)
 
     # Training
-    num_generations: int = 600
+    num_generations: int = 400
 
     # Antithetic sampling: ±E pairs halve variance
     use_antithetic: bool = True
 
-    # Fitness shaping
-    normalize_fitness: bool = True     # z-score fallback
-    rank_transform: bool = True        # rank-based shaping (more robust)
-    centered_rank: bool = True         # center ranks to [-0.5, 0.5]
+    # Fitness shaping (repo gốc default: z-score, not rank_transform)
+    normalize_fitness: bool = True     # z-score normalization (default in repo gốc)
+    rank_transform: bool = False       # rank-based shaping (alternative, off by default)
+    centered_rank: bool = True         # center ranks to [-0.5, 0.5] (only if rank_transform=True)
 
     # Regularization & schedules
     weight_decay: float = 0.0
-    lr_decay: float = 0.98
-    sigma_decay: float = 0.98
+    lr_decay: float = 0.999
+    sigma_decay: float = 0.999
 
     # Full-rank constraint: N*r ≥ min(m,n) per layer
     enforce_rank_constraint: bool = True
@@ -343,11 +343,20 @@ class EGGROLL:
         return updates
 
     def _apply_updates(self, updates: Dict[str, torch.Tensor]):
-        """Apply Δμ to model parameters."""
+        """Apply Δμ to model parameters.
+
+        Note: updates are scaled by √N to match repo gốc convention:
+            grad = -(update * √N)  →  param += lr * (-grad) = lr * update * √N
+        This is equivalent to the repo gốc's:
+            return -(new_grad * jnp.sqrt(fitnesses.size))
+        followed by optax SGD update.
+        """
+        N = self.config.population_size
+        scale = self.current_lr * np.sqrt(N)
         with torch.no_grad():
             for name, param in self.model.named_parameters():
                 if name in updates:
-                    param.add_(self.current_lr * updates[name])
+                    param.add_(scale * updates[name])
                     if self.config.weight_decay > 0:
                         param.mul_(1 - self.config.weight_decay)
 

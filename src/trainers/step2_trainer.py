@@ -37,28 +37,29 @@ class Step2Trainer:
         self.task_type = config['dataset']['task_type']
         self.metric_name = config['dataset'].get('metric', 'rmse')
 
-        # ── EGGROLL config ────────────────────────────────────────────
+        # ── EGGROLL config (all values from hydra yaml) ─────────────────
         ecfg = config.get('eggroll', {})
         self.num_generations = ecfg.get('num_generations', 600)
         self.patience = ecfg.get('patience', 200)
         self.eval_every = ecfg.get('eval_every', 5)
 
-        # FIX: Use random_seed_train (top-level), not nonexistent data.random_seed
+        # Seed: use random_seed_train (top-level config key)
         eggroll_seed = config.get('random_seed_train', 42)
 
         eggroll_config = EGGROLLConfig(
-            population_size=ecfg.get('population_size', 128),
+            population_size=ecfg.get('population_size', 32),
             rank=ecfg.get('rank', 4),
             sigma=ecfg.get('sigma', 0.01),
-            learning_rate=ecfg.get('learning_rate', 0.1),
+            learning_rate=ecfg.get('learning_rate', 0.001),
             num_generations=self.num_generations,
             use_antithetic=ecfg.get('use_antithetic', True),
+            # Fitness shaping: repo gốc defaults to z-score, not rank_transform
             normalize_fitness=ecfg.get('normalize_fitness', True),
-            rank_transform=ecfg.get('rank_transform', True),
+            rank_transform=ecfg.get('rank_transform', False),
             centered_rank=ecfg.get('centered_rank', True),
             weight_decay=ecfg.get('weight_decay', 0.0),
-            lr_decay=ecfg.get('lr_decay', 0.98),
-            sigma_decay=ecfg.get('sigma_decay', 0.98),
+            lr_decay=ecfg.get('lr_decay', 0.999),
+            sigma_decay=ecfg.get('sigma_decay', 0.999),
             seed=eggroll_seed,
         )
 
@@ -198,16 +199,16 @@ class Step2Trainer:
         print(f"  {'n_interactions':<30s}: {scfg.get('n_interactions', 6)}")
         print(f"  {'n_rbf (gaussians)':<30s}: {scfg.get('n_rbf', 50)}")
         print(f"  {'n_filters':<30s}: {scfg.get('n_filters', 128)}")
-        print(f"  {'cutoff (Å)':<30s}: {scfg.get('cutoff', 10.0)}")
+        print(f"  {'cutoff':<30s}: {scfg.get('cutoff', 10.0)}")
         print(f"  {'Total params':<30s}: {self.model.num_params:,}")
         print(f"  {'Trainable params':<30s}: {self.model.num_trainable_params:,}")
 
         print(f"\n  --- Optimizer (EGGROLL) ---")
         print(f"  {'Population size (N)':<30s}: {ecfg.population_size}")
         print(f"  {'Rank (r)':<30s}: {ecfg.rank}")
-        print(f"  {'N × r (update rank)':<30s}: {Nr}")
-        print(f"  {'Sigma (σ)':<30s}: {ecfg.sigma}")
-        print(f"  {'Learning rate (α)':<30s}: {ecfg.learning_rate}")
+        print(f"  {'N * r (update rank)':<30s}: {Nr}")
+        print(f"  {'Sigma':<30s}: {ecfg.sigma}")
+        print(f"  {'Learning rate':<30s}: {ecfg.learning_rate}")
         print(f"  {'LR decay':<30s}: {ecfg.lr_decay}")
         print(f"  {'Sigma decay':<30s}: {ecfg.sigma_decay}")
         print(f"  {'Weight decay':<30s}: {ecfg.weight_decay}")
@@ -221,7 +222,7 @@ class Step2Trainer:
         print(f"  {'Early stopping patience':<30s}: {self.patience}")
         print(f"  {'Eval every':<30s}: {self.eval_every}")
         print(f"  {'Fitness evaluation':<30s}: full-batch (all train data)")
-        print(f"  {'Perturbation method':<30s}: save/restore snapshot μ")
+        print(f"  {'Perturbation method':<30s}: save/restore snapshot weight")
         print(f"  {'Batch size (data)':<30s}: {cfg_full['training'].get('batch_size', 32)}")
 
         print(f"\n  --- Data ---")
@@ -235,7 +236,7 @@ class Step2Trainer:
         n_evals = ecfg.population_size * len(train_loader) * self.num_generations
         print(f"\n  --- Cost estimate ---")
         print(f"  {'Forward passes / gen':<30s}: "
-              f"{ecfg.population_size} × {len(train_loader)} = "
+              f"{ecfg.population_size} * {len(train_loader)} = "
               f"{ecfg.population_size * len(train_loader):,}")
         print(f"  {'Total forward passes':<30s}: ~{n_evals:,}")
 

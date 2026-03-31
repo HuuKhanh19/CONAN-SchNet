@@ -59,7 +59,7 @@ data:
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
   split_method: "random_scaffold"
-  random_seed_split: 1        # Seed cho scaffold split (tách biệt khỏi training)
+  random_seed_split: 0        # Seed cho scaffold split (tách biệt khỏi training)
 
 # ─── Conformer Generation ───────────────────────────────────────────────────
 conformer:
@@ -94,17 +94,26 @@ training:
 
 # ─── EGGROLL (Step 2) ──────────────────────────────────────────────────────
 eggroll:
-  population_size: 128
-  rank: 1
-  sigma: 0.01
-  learning_rate: 0.1
-  num_generations: 400
-  use_antithetic: true
-  normalize_fitness: true
-  rank_transform: true
-  centered_rank: true
-  weight_decay: 0.0
-  lr_decay: 0.99
-  sigma_decay: 0.99
-  patience: 200
-  eval_every: 5
+  # Core (Eq. 8 in paper)
+  population_size: 32           # N: number of perturbations per generation
+  rank: 4                       # r: rank of each perturbation (N*r=128 ≥ min(m,n))
+  sigma: 0.01                   # σ: noise scale for perturbations
+  learning_rate: 0.001          # α: step size (scaled by √N internally, matching repo gốc)
+
+  # Fitness shaping (repo gốc default: z-score)
+  normalize_fitness: true       # z-score: (f - mean) / std
+  rank_transform: false         # if true, use rank-based shaping instead of z-score
+  centered_rank: true           # only used if rank_transform=true
+
+  # Antithetic sampling
+  use_antithetic: true          # ±E pairs to halve variance
+
+  # Schedules & regularization
+  lr_decay: 0.999               # lr *= lr_decay each generation
+  sigma_decay: 0.999            # σ *= sigma_decay each generation
+  weight_decay: 0.00001         # L2 regularization (match step 1)
+
+  # Training control
+  num_generations: 400          # max generations
+  patience: 200                 # early stopping patience (in generations)
+  eval_every: 5                 # validate every N generations

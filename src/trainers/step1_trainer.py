@@ -215,6 +215,15 @@ class Step1Trainer:
     ) -> Dict[str, Any]:
         self._print_hyperparameters(train_loader)
 
+        # Initial evaluation (before any training)
+        init_metrics = self.evaluate(valid_loader)
+        if self.task_type == 'regression':
+            print(f"Initial  | val_rmse={init_metrics['rmse']:.4f}, "
+                  f"val_mae={init_metrics['mae']:.4f}")
+        else:
+            print(f"Initial  | val_auc={init_metrics.get('auc', 0):.4f}")
+        print("-" * 70)
+
         start_time = time.time()
 
         for epoch in range(1, self.epochs + 1):
