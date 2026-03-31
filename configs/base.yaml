@@ -97,7 +97,7 @@ eggroll:
   # Core (Eq. 8 in paper)
   population_size: 32           # N: number of perturbations per generation
   rank: 4                       # r: rank of each perturbation (N*r=128 ≥ min(m,n))
-  sigma: 0.01                   # σ: noise scale for perturbations
+  sigma: 0.00000001                   # σ: noise scale for perturbations
   learning_rate: 0.001          # α: step size (scaled by √N internally, matching repo gốc)
 
   # Fitness shaping (repo gốc default: z-score)
