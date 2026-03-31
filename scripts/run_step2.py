@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Step 2: SchNet + EGGROLL"""
+"""Step 2: SchNet + EGGROLL."""
 
 import os
 import sys
-import time
 import torch
 import hydra
 import pandas as pd
+import time
 from omegaconf import DictConfig, OmegaConf
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +21,7 @@ from src.utils.utils import seed_everything
 def run_step2(config: dict, device: torch.device):
     dataset_name = config['dataset']['name']
 
+    # ── Seed everything FIRST ────────────────────────────────────────────
     train_seed = config['random_seed_train']
     seed_everything(train_seed)
     print(f"random_seed_train={train_seed}")
@@ -29,10 +30,10 @@ def run_step2(config: dict, device: torch.device):
     print(f"Step 2: SchNet + EGGROLL - {dataset_name.upper()}")
     print(f"{'='*60}")
 
+    # ── Load or prepare data ─────────────────────────────────────────────
     base_dir = config['data']['processed_dir']
     split_seed = config['data']['random_seed_split']
     ds_dir = f"{base_dir}/{dataset_name}/seed_{split_seed}"
-    print(ds_dir)
 
     if os.path.exists(os.path.join(ds_dir, 'train.csv')):
         print(f"Loading preprocessed data from {ds_dir}")
@@ -42,38 +43,37 @@ def run_step2(config: dict, device: torch.device):
     else:
         print("Preprocessed data not found, running preprocessing...")
         train_df, valid_df, test_df = prepare_dataset(config)
-        save_splits(train_df, valid_df, test_df, ds_dir, dataset_name)
+        save_splits(train_df, valid_df, test_df, ds_dir)  # FIX: removed extra arg
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
-    train_loader, valid_loader, test_loader = create_dataloaders(config, train_df, valid_df, test_df)
-
-    model = build_schnet_model(config)
-
-    print(f"Model: {model.num_params:,} params")
-
-    model = build_schnet_model(config)
-
-    # --- THÊM ĐOẠN NÀY VÀO ---
-    print("\n" + "="*60)
-    print("MODEL PARAMETER SHAPES")
-    print("="*60)
-    total_params = 0
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            shape_str = str(list(param.shape))
-            print(f"Layer: {name: <50} | Shape: {shape_str: <20} | Params: {param.numel():,}")
-            total_params += param.numel()
-    print("="*60)
-    print(f"Total Trainable Parameters: {total_params:,}\n")
-    # -------------------------
-
-    exp_dir = os.path.join(
-        config['experiment']['output_dir'],
-        f"step2/{dataset_name}/seed_{split_seed}",
+    train_loader, valid_loader, test_loader = create_dataloaders(
+        config, train_df, valid_df, test_df
     )
 
-    trainer = Step2Trainer(model=model, config=config, device=device, experiment_dir=exp_dir)
+    # ── Build model (ONCE – no duplicate!) ───────────────────────────────
+    model = build_schnet_model(config)
+    print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
+
+    if config.get('experiment', {}).get('verbose', False):
+        print("\n" + "=" * 60)
+        print("MODEL PARAMETER SHAPES")
+        print("=" * 60)
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"  {name:<50s} | {str(list(param.shape)):<20s} | {param.numel():,}")
+        print("=" * 60)
+
+    # ── Train ────────────────────────────────────────────────────────────
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    exp_dir = os.path.join(
+        config['experiment']['output_dir'],
+        f"step2/{dataset_name}/seed_{split_seed}/{timestamp}",
+    )
+
+    trainer = Step2Trainer(
+        model=model, config=config, device=device, experiment_dir=exp_dir
+    )
     results = trainer.train(train_loader, valid_loader, test_loader)
     print(f"\nResults saved to: {exp_dir}")
     return results
@@ -84,8 +84,9 @@ def main(cfg: DictConfig):
     os.chdir(hydra.utils.get_original_cwd())
 
     dataset_name = cfg.dataset_name
-    assert dataset_name in cfg.datasets, \
+    assert dataset_name in cfg.datasets, (
         f"Unknown dataset: {dataset_name}. Choose from: {list(cfg.datasets.keys())}"
+    )
 
     config = OmegaConf.to_container(cfg, resolve=True)
     config['dataset'] = config['datasets'][dataset_name]

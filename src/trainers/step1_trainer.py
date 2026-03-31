@@ -156,18 +156,64 @@ class Step1Trainer:
     # Main loop
     # ------------------------------------------------------------------
 
+    def _print_hyperparameters(self, train_loader: DataLoader):
+        """Print all hyperparameters used in this training run."""
+        cfg = self.config
+        tcfg = cfg['training']
+        scfg = cfg.get('schnet', {})
+        dcfg = cfg.get('data', {})
+        ccfg = cfg.get('conformer', {})
+
+        print("\n" + "=" * 70)
+        print("STEP 1 HYPERPARAMETERS")
+        print("=" * 70)
+
+        print(f"  {'Dataset':<30s}: {cfg['dataset']['name']}")
+        print(f"  {'Task type':<30s}: {cfg['dataset']['task_type']}")
+        print(f"  {'Metric':<30s}: {cfg['dataset'].get('metric', 'rmse')}")
+        print(f"  {'random_seed_train':<30s}: {cfg.get('random_seed_train', 'N/A')}")
+        print(f"  {'random_seed_split':<30s}: {dcfg.get('random_seed_split', 'N/A')}")
+        print(f"  {'Split method':<30s}: {dcfg.get('split_method', 'N/A')}")
+
+        print(f"\n  --- Model (SchNet) ---")
+        print(f"  {'n_atom_basis (hidden)':<30s}: {scfg.get('n_atom_basis', 128)}")
+        print(f"  {'n_interactions':<30s}: {scfg.get('n_interactions', 6)}")
+        print(f"  {'n_rbf (gaussians)':<30s}: {scfg.get('n_rbf', 50)}")
+        print(f"  {'n_filters':<30s}: {scfg.get('n_filters', 128)}")
+        print(f"  {'cutoff (Å)':<30s}: {scfg.get('cutoff', 10.0)}")
+        print(f"  {'Total params':<30s}: {self.model.num_params:,}")
+        print(f"  {'Trainable params':<30s}: {self.model.num_trainable_params:,}")
+
+        print(f"\n  --- Training (Adam) ---")
+        print(f"  {'Optimizer':<30s}: Adam")
+        print(f"  {'Learning rate':<30s}: {tcfg.get('learning_rate', 5e-4)}")
+        print(f"  {'Weight decay':<30s}: {tcfg.get('weight_decay', 1e-5)}")
+        print(f"  {'Batch size':<30s}: {tcfg.get('batch_size', 32)}")
+        print(f"  {'Epochs':<30s}: {self.epochs}")
+        print(f"  {'Gradient clip':<30s}: {self.gradient_clip}")
+        print(f"  {'Scheduler':<30s}: ReduceLROnPlateau")
+        print(f"  {'Scheduler patience':<30s}: {tcfg.get('scheduler_patience', 25)}")
+        print(f"  {'Scheduler factor':<30s}: {tcfg.get('scheduler_factor', 0.5)}")
+        print(f"  {'Early stopping patience':<30s}: {self.patience}")
+        print(f"  {'Loss function':<30s}: "
+              f"{'BCELoss' if self.task_type == 'classification' else 'MSELoss'}")
+
+        print(f"\n  --- Data ---")
+        print(f"  {'Train samples':<30s}: {len(train_loader.dataset)}")
+        print(f"  {'Train batches':<30s}: {len(train_loader)}")
+        print(f"  {'Num conformers':<30s}: {ccfg.get('num_conformers', 1)}")
+        print(f"  {'Conformer seed':<30s}: {ccfg.get('random_seed_gen', 42)}")
+        print(f"  {'MMFF optimize':<30s}: {ccfg.get('optimize_mmff', True)}")
+
+        print("=" * 70)
+
     def train(
         self,
         train_loader: DataLoader,
         valid_loader: DataLoader,
         test_loader: Optional[DataLoader] = None,
     ) -> Dict[str, Any]:
-        print(f"\nStarting Step 1 Training ({self.task_type})")
-        print(f"  Model params: {self.model.num_trainable_params:,}")
-        print(f"  Epochs: {self.epochs}, patience: {self.patience}")
-        print(f"  LR: {self.config['training']['learning_rate']}, "
-              f"batch_size: {self.config['training']['batch_size']}")
-        print("-" * 70)
+        self._print_hyperparameters(train_loader)
 
         start_time = time.time()
 
