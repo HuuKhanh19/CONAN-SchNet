@@ -11,7 +11,7 @@ defaults:
 # ─── Global Settings ─────────────────────────────────────────────────────────
 dataset_name: esol            # Override: dataset_name=freesolv
 random_seed_train: 0          # Seed for training (model init, optimizer, shuffle)
-gpu: 0
+gpu: 1
 
 # ─── Experiment ──────────────────────────────────────────────────────────────
 experiment:
@@ -59,7 +59,7 @@ data:
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
   split_method: "random_scaffold"
-  random_seed_split: 0        # Seed cho scaffold split (tách biệt khỏi training)
+  random_seed_split: 2        # Seed cho scaffold split (tách biệt khỏi training)
 
 # ─── Conformer Generation ───────────────────────────────────────────────────
 conformer:
@@ -95,10 +95,17 @@ training:
 # ─── EGGROLL (Step 2) ──────────────────────────────────────────────────────
 eggroll:
   # Core (Eq. 8 in paper)
-  population_size: 32           # N: number of perturbations per generation
-  rank: 4                       # r: rank of each perturbation (N*r=128 ≥ min(m,n))
-  sigma: 0.00000001                   # σ: noise scale for perturbations
-  learning_rate: 0.001          # α: step size (scaled by √N internally, matching repo gốc)
+  population_size: 128           # N: number of perturbations per generation
+  rank: 1                       # r: rank of each perturbation (N*r=128 ≥ min(m,n))
+  sigma: 0.01                   # σ: noise scale for perturbations
+  learning_rate: 0.001          # α: for Adam, same scale as Step 1 (Adam normalizes internally)
+                                #    for SGD, scale by √N internally
+
+  # Inner optimizer for ES gradient (matching repo gốc optax support)
+  optimizer: "sgd"             # 'sgd' or 'adam' — adam tracks momentum of ES gradient
+  adam_beta1: 0.9               # first moment decay (smooth over ~10 generations)
+  adam_beta2: 0.999             # second moment decay (adaptive per-param lr)
+  adam_eps: 0.00000001          # numerical stability
 
   # Fitness shaping (repo gốc default: z-score)
   normalize_fitness: true       # z-score: (f - mean) / std
@@ -109,11 +116,11 @@ eggroll:
   use_antithetic: true          # ±E pairs to halve variance
 
   # Schedules & regularization
-  lr_decay: 0.999               # lr *= lr_decay each generation
-  sigma_decay: 0.999            # σ *= sigma_decay each generation
+  lr_decay: 0.99                 # lr *= lr_decay each generation (1.0 = no decay, let Adam adapt)
+  sigma_decay: 0.99            # σ *= sigma_decay each generation
   weight_decay: 0.00001         # L2 regularization (match step 1)
 
   # Training control
   num_generations: 400          # max generations
-  patience: 200                 # early stopping patience (in generations)
+  patience: 150                 # early stopping patience (in generations)
   eval_every: 5                 # validate every N generations

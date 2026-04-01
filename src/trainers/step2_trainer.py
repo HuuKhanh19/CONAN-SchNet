@@ -53,10 +53,16 @@ class Step2Trainer:
             learning_rate=ecfg.get('learning_rate', 0.001),
             num_generations=self.num_generations,
             use_antithetic=ecfg.get('use_antithetic', True),
-            # Fitness shaping: repo gốc defaults to z-score, not rank_transform
+            # Fitness shaping
             normalize_fitness=ecfg.get('normalize_fitness', True),
             rank_transform=ecfg.get('rank_transform', False),
             centered_rank=ecfg.get('centered_rank', True),
+            # Inner optimizer for ES gradient
+            optimizer=ecfg.get('optimizer', 'adam'),
+            adam_beta1=ecfg.get('adam_beta1', 0.9),
+            adam_beta2=ecfg.get('adam_beta2', 0.999),
+            adam_eps=ecfg.get('adam_eps', 1e-8),
+            # Regularization & schedules
             weight_decay=ecfg.get('weight_decay', 0.0),
             lr_decay=ecfg.get('lr_decay', 0.999),
             sigma_decay=ecfg.get('sigma_decay', 0.999),
@@ -209,6 +215,11 @@ class Step2Trainer:
         print(f"  {'N * r (update rank)':<30s}: {Nr}")
         print(f"  {'Sigma':<30s}: {ecfg.sigma}")
         print(f"  {'Learning rate':<30s}: {ecfg.learning_rate}")
+        print(f"  {'Inner optimizer':<30s}: {ecfg.optimizer}")
+        if ecfg.optimizer == 'adam':
+            print(f"  {'Adam β1':<30s}: {ecfg.adam_beta1}")
+            print(f"  {'Adam β2':<30s}: {ecfg.adam_beta2}")
+            print(f"  {'Adam ε':<30s}: {ecfg.adam_eps}")
         print(f"  {'LR decay':<30s}: {ecfg.lr_decay}")
         print(f"  {'Sigma decay':<30s}: {ecfg.sigma_decay}")
         print(f"  {'Weight decay':<30s}: {ecfg.weight_decay}")
@@ -236,7 +247,7 @@ class Step2Trainer:
         n_evals = ecfg.population_size * len(train_loader) * self.num_generations
         print(f"\n  --- Cost estimate ---")
         print(f"  {'Forward passes / gen':<30s}: "
-              f"{ecfg.population_size} * {len(train_loader)} = "
+              f"{ecfg.population_size} × {len(train_loader)} = "
               f"{ecfg.population_size * len(train_loader):,}")
         print(f"  {'Total forward passes':<30s}: ~{n_evals:,}")
 
@@ -256,8 +267,6 @@ class Step2Trainer:
         cached_train = self.collect_full_batch_list(train_loader)
         print(f"  {len(cached_train)} batches cached")
 
-        fitness_fn = self._make_fitness_fn(cached_train)
-
         # Initial evaluation
         val_metrics = self.evaluate(valid_loader)
         if self.task_type == 'regression':
@@ -272,7 +281,8 @@ class Step2Trainer:
         for gen in range(1, self.num_generations + 1):
             gen_start = time.time()
 
-            stats = self.eggroll.step(fitness_fn, data=None)
+            # vmap-parallel: pass cached_batches directly
+            stats = self.eggroll.step(cached_batches=cached_train)
             gen_time = time.time() - gen_start
 
             record: Dict[str, Any] = {

@@ -3,22 +3,18 @@ EGGROLL: Evolution Strategies with Low-Rank Perturbations.
 
 Based on: "Evolution Strategies at the Hyperscale" (Sarkar et al., 2025)
 
-Core idea (Eq. 8 in paper):
-    μ_{t+1} = μ_t + (α/N) * Σ_i E_i * f(μ + σE_i)
+This implementation uses torch.func.vmap to evaluate all N perturbations
+in parallel, matching the JAX repo's jax.vmap approach.
 
-where E_i = (1/√r) * A_i @ B_i^T  with  A_i ∈ R^{m×r}, B_i ∈ R^{n×r}
-
-Memory: O(r(m+n)) per perturbation instead of O(mn)
-Update rank: min(N*r, m, n) — full-rank when N*r ≥ min(m,n)
-
-Update computation (Section 4.3):
-    Σ f_i * E_i = (scale/N) * einsum('nir,njr->ij', f*A, B)
-    Never materializes the full (N, m, n) tensor.
+Sequential (old):  N × B forward passes  (~5s/gen for N=32, B=29)
+Parallel  (new):   B vmap calls          (~7s/gen for N=128, B=29)
 """
 
+import copy
 import torch
 import torch.nn as nn
 import numpy as np
+from torch.func import vmap, functional_call
 from typing import Dict, List, Optional, Tuple, Callable, Any
 from dataclasses import dataclass
 
@@ -27,32 +23,29 @@ from dataclasses import dataclass
 class EGGROLLConfig:
     """Configuration for EGGROLL optimizer."""
 
-    # Core hyperparameters
-    population_size: int = 32          # N: total perturbations per step
-    rank: int = 4                      # r: rank of each perturbation
-    sigma: float = 0.01               # σ: noise scale
-    learning_rate: float = 0.001      # α: step size (scaled by √N internally)
+    population_size: int = 32
+    rank: int = 4
+    sigma: float = 0.01
+    learning_rate: float = 0.001
 
-    # Training
     num_generations: int = 400
 
-    # Antithetic sampling: ±E pairs halve variance
     use_antithetic: bool = True
 
-    # Fitness shaping (repo gốc default: z-score, not rank_transform)
-    normalize_fitness: bool = True     # z-score normalization (default in repo gốc)
-    rank_transform: bool = False       # rank-based shaping (alternative, off by default)
-    centered_rank: bool = True         # center ranks to [-0.5, 0.5] (only if rank_transform=True)
+    normalize_fitness: bool = True
+    rank_transform: bool = False
+    centered_rank: bool = True
 
-    # Regularization & schedules
+    optimizer: str = 'adam'
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    adam_eps: float = 1e-8
+
     weight_decay: float = 0.0
     lr_decay: float = 0.999
     sigma_decay: float = 0.999
 
-    # Full-rank constraint: N*r ≥ min(m,n) per layer
     enforce_rank_constraint: bool = True
-
-    # Seed (only for local RNG, NOT global)
     seed: Optional[int] = None
 
     def __post_init__(self):
@@ -60,14 +53,15 @@ class EGGROLLConfig:
         assert self.rank > 0
         assert self.sigma > 0
         assert self.learning_rate > 0
+        assert self.optimizer in ('sgd', 'adam')
 
 
 # =========================================================================
-# Low-rank perturbation for a single parameter tensor
+# Low-rank perturbation helpers
 # =========================================================================
 
 class LowRankPerturbation:
-    """E = (1/√r) * A @ B^T  for a parameter of shape (m, n)."""
+    """E = (1/√r) * A @ B^T for a parameter of shape (m, n)."""
 
     def __init__(self, shape: Tuple[int, ...], rank: int,
                  device: torch.device, dtype: torch.dtype = torch.float32):
@@ -90,7 +84,6 @@ class LowRankPerturbation:
         self.scale = 1.0 / np.sqrt(self.effective_rank)
 
     def sample(self, rng: torch.Generator) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sample A ∈ R^{m×r} and B ∈ R^{n×r}."""
         A = torch.randn(self.m, self.effective_rank,
                          generator=rng, device=self.device, dtype=self.dtype)
         B = torch.randn(self.n, self.effective_rank,
@@ -98,7 +91,6 @@ class LowRankPerturbation:
         return A, B
 
     def construct_perturbation(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-        """E = (1/√r) * A @ B^T — used for apply/remove during fitness eval."""
         E = self.scale * torch.mm(A, B.t())
         if self.is_1d:
             return E.squeeze(-1)
@@ -109,19 +101,11 @@ class LowRankPerturbation:
     def compute_update(self, A_list: List[torch.Tensor],
                        B_list: List[torch.Tensor],
                        fitness_scores: torch.Tensor) -> torch.Tensor:
-        """
-        Update = (scale/N) * Σ_i f_i * A_i @ B_i^T
-               = (scale/N) * einsum('nir,njr->ij', f*A, B)
-
-        Never materializes the full (N, m, n) tensor.
-        """
         N = len(A_list)
-        A_stack = torch.stack(A_list)                         # (N, m, r)
-        B_stack = torch.stack(B_list)                         # (N, n, r)
-        weighted_A = fitness_scores.view(N, 1, 1) * A_stack   # (N, m, r)
-
+        A_stack = torch.stack(A_list)
+        B_stack = torch.stack(B_list)
+        weighted_A = fitness_scores.view(N, 1, 1) * A_stack
         update = self.scale * torch.einsum('nir,njr->ij', weighted_A, B_stack) / N
-
         if self.is_1d:
             return update.squeeze(-1)
         if hasattr(self, 'original_shape'):
@@ -130,17 +114,15 @@ class LowRankPerturbation:
 
 
 # =========================================================================
-# EGGROLL Optimizer
+# EGGROLL Optimizer (vmap-parallel)
 # =========================================================================
 
 class EGGROLL:
     """
-    EGGROLL: blackbox optimizer using low-rank evolution strategies.
+    EGGROLL with vmap-parallel fitness evaluation.
 
-    Key design choices:
-        - Save/restore base weights μ (no numerical drift from add/subtract)
-        - Local RNG only (does NOT reset global torch seed)
-        - Einsum-based update (memory efficient)
+    Instead of N sequential forward passes per batch, uses torch.func.vmap
+    to evaluate all N perturbations in a single vectorized call per batch.
     """
 
     def __init__(self, model: nn.Module, config: EGGROLLConfig,
@@ -149,20 +131,35 @@ class EGGROLL:
         self.config = config
         self.device = device or next(model.parameters()).device
 
-        # Local RNG only — do NOT touch global torch.manual_seed()
+        # Local RNG only
         self.rng = torch.Generator(device=self.device)
         if config.seed is not None:
             self.rng.manual_seed(config.seed)
 
-        # Setup perturbation objects per parameter
+        # Setup perturbation objects
         self.param_names: List[str] = []
         self.param_shapes: Dict[str, Tuple] = {}
         self.perturbations: Dict[str, LowRankPerturbation] = {}
         self._setup_parameters()
 
+        # Frozen copy for functional_call (stateless reference model)
+        self._func_model = copy.deepcopy(model)
+        self._func_model.eval()
+        # Extract buffers once (they don't change)
+        self._buffers = {k: v for k, v in self._func_model.named_buffers()}
+
         # Schedules
         self.current_lr = config.learning_rate
         self.current_sigma = config.sigma
+
+        # Adam state
+        self.adam_m: Dict[str, torch.Tensor] = {}
+        self.adam_v: Dict[str, torch.Tensor] = {}
+        if config.optimizer == 'adam':
+            for name in self.param_names:
+                p = dict(self.model.named_parameters())[name]
+                self.adam_m[name] = torch.zeros_like(p.data)
+                self.adam_v[name] = torch.zeros_like(p.data)
 
         # Tracking
         self.generation = 0
@@ -172,7 +169,6 @@ class EGGROLL:
     # ------------------------------------------------------------------
 
     def _setup_parameters(self):
-        """Create a LowRankPerturbation object for each trainable param."""
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
@@ -194,47 +190,22 @@ class EGGROLL:
         Nr = self.config.population_size * self.config.rank
         print(f"EGGROLL: {len(self.param_names)} param groups, {n_params:,} params")
         print(f"  N={self.config.population_size}, r={self.config.rank}, N*r={Nr}")
-        print(f"  sigma={self.config.sigma}, lr={self.config.learning_rate}")
+        print(f"  sigma={self.config.sigma}, lr={self.config.learning_rate}, "
+              f"optimizer={self.config.optimizer}")
+        print(f"  mode=vmap-parallel")
 
     # ------------------------------------------------------------------
-    # Snapshot-based perturbation (no numerical drift)
-    # ------------------------------------------------------------------
-
-    def _save_base_weights(self) -> Dict[str, torch.Tensor]:
-        """Snapshot current μ to CPU. Called once per generation."""
-        return {name: param.data.clone()
-                for name, param in self.model.named_parameters()
-                if name in self.perturbations}
-
-    def _restore_base_weights(self, snapshot: Dict[str, torch.Tensor]):
-        """Restore μ exactly from snapshot (zero drift)."""
-        with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if name in snapshot:
-                    param.data.copy_(snapshot[name])
-
-    def _apply_perturbation(self, factors: Dict[str, Tuple[torch.Tensor, torch.Tensor]],
-                            sign: float = 1.0):
-        """Set model params to μ + sign*σ*E (assumes μ is already loaded)."""
-        with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if name in factors:
-                    A, B = factors[name]
-                    E = self.perturbations[name].construct_perturbation(A, B)
-                    param.add_(sign * self.current_sigma * E)
-
-    # ------------------------------------------------------------------
-    # Sampling
+    # Sampling: produce N sets of (A, B) factors
     # ------------------------------------------------------------------
 
     def _sample_perturbations(self) -> List[Dict[str, Tuple[torch.Tensor, torch.Tensor]]]:
-        """Sample N//2 perturbation factor sets (will be mirrored if antithetic)."""
-        N = self.config.population_size
+        """Sample N_unique perturbation factor sets."""
+        N_unique = self.config.population_size
         if self.config.use_antithetic:
-            N = N // 2
+            N_unique = N_unique // 2
 
         samples = []
-        for _ in range(N):
+        for _ in range(N_unique):
             sample = {}
             for name in self.param_names:
                 A, B = self.perturbations[name].sample(self.rng)
@@ -243,66 +214,141 @@ class EGGROLL:
         return samples
 
     # ------------------------------------------------------------------
-    # Fitness evaluation (sequential, save/restore μ)
+    # Build stacked perturbed params for vmap
     # ------------------------------------------------------------------
 
-    def _evaluate_fitness(
-        self,
-        fitness_fn: Callable,
-        data: Any,
-        perturbation_samples: List[Dict],
-    ) -> Tuple[torch.Tensor, List[Dict], List[float]]:
-        """
-        Evaluate fitness for all perturbations.
+    def _build_stacked_params(
+        self, perturbation_samples: List[Dict]
+    ) -> Tuple[Dict[str, torch.Tensor], List[Dict], List[float]]:
+        """Build N stacked parameter dicts for vmap.
 
-        For each sample E_i:
-            1. Restore μ from snapshot
-            2. Apply +σE_i → evaluate f(μ + σE_i)
-            3. (Antithetic) Restore μ, apply -σE_i → evaluate f(μ - σE_i)
-
-        Returns: (fitness_scores, all_factors, signs)
+        With antithetic: each sample produces +σE and -σE → 2 copies.
+        Returns stacked_params[name] of shape (N, *param_shape),
+        plus all_factors and signs for update computation.
         """
-        fitness_scores = []
+        base_params = {name: param.data
+                       for name, param in self.model.named_parameters()
+                       if name in self.perturbations}
+
+        all_perturbed: Dict[str, List[torch.Tensor]] = {n: [] for n in self.param_names}
         all_factors = []
         signs = []
 
-        # Snapshot base weights ONCE
-        snapshot = self._save_base_weights()
-        self.model.eval()
-
         for factors in perturbation_samples:
-            # ── Positive perturbation: μ + σE ──
-            self._restore_base_weights(snapshot)
-            self._apply_perturbation(factors, sign=1.0)
-            with torch.no_grad():
-                fitness_pos = fitness_fn(self.model, data)
-
-            fitness_scores.append(fitness_pos)
+            # +σE
+            for name in self.param_names:
+                A, B = factors[name]
+                E = self.perturbations[name].construct_perturbation(A, B)
+                all_perturbed[name].append(base_params[name] + self.current_sigma * E)
             all_factors.append(factors)
             signs.append(1.0)
 
-            # ── Antithetic: μ - σE ──
+            # -σE (antithetic)
             if self.config.use_antithetic:
-                self._restore_base_weights(snapshot)
-                self._apply_perturbation(factors, sign=-1.0)
-                with torch.no_grad():
-                    fitness_neg = fitness_fn(self.model, data)
-
-                fitness_scores.append(fitness_neg)
+                for name in self.param_names:
+                    A, B = factors[name]
+                    E = self.perturbations[name].construct_perturbation(A, B)
+                    all_perturbed[name].append(base_params[name] - self.current_sigma * E)
                 all_factors.append(factors)
                 signs.append(-1.0)
 
-        # Restore clean μ before update
-        self._restore_base_weights(snapshot)
+        # Stack: (N, *param_shape)
+        stacked_params = {name: torch.stack(all_perturbed[name], dim=0)
+                          for name in self.param_names}
 
-        return torch.tensor(fitness_scores, device=self.device), all_factors, signs
+        # Include non-trainable params (frozen) — broadcast across N
+        N = len(signs)
+        for name, param in self.model.named_parameters():
+            if name not in self.perturbations:
+                stacked_params[name] = param.data.unsqueeze(0).expand(N, *param.shape)
+
+        return stacked_params, all_factors, signs
+
+    # ------------------------------------------------------------------
+    # vmap-parallel fitness evaluation
+    # ------------------------------------------------------------------
+
+    def _evaluate_fitness_vmap(
+        self,
+        cached_batches: list,
+        perturbation_samples: List[Dict],
+    ) -> Tuple[torch.Tensor, List[Dict], List[float]]:
+        """Evaluate all N perturbations in parallel using vmap.
+
+        Uses chunked vmap to handle large N without OOM:
+        splits N perturbations into chunks that fit in GPU memory,
+        runs vmap on each chunk, then concatenates results.
+        """
+        stacked_params, all_factors, signs = self._build_stacked_params(
+            perturbation_samples
+        )
+        N = len(signs)
+
+        # Auto-detect chunk size: N=128 uses ~3GB, so max ~256 per chunk for 15GB
+        # Use chunk_size = min(N, 256) as safe default
+        chunk_size = min(N, 256)
+
+        # Define single-instance forward
+        func_model = self._func_model
+
+        def call_single(params, buffers, inputs):
+            return functional_call(func_model, (params, buffers), (inputs,))
+
+        vmapped_forward = vmap(call_single, in_dims=(0, 0, None))
+
+        # Collect predictions: (N, total_samples)
+        all_chunk_preds = []  # list of (chunk_size, total_samples) tensors
+        all_targets = None
+
+        self._func_model.eval()
+        with torch.no_grad():
+            # Process in chunks of workers
+            for chunk_start in range(0, N, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, N)
+                C = chunk_end - chunk_start
+
+                # Slice stacked params/buffers for this chunk
+                chunk_params = {k: v[chunk_start:chunk_end] for k, v in stacked_params.items()}
+                chunk_buffers = {}
+                for k, v in self._func_model.named_buffers():
+                    chunk_buffers[k] = v.unsqueeze(0).expand(C, *v.shape)
+
+                # Accumulate predictions across data batches for this chunk
+                chunk_batch_preds = []
+                batch_targets = []
+
+                for batch in cached_batches:
+                    batch_gpu = {k: v.to(self.device) for k, v in batch.items()}
+                    target = batch_gpu.pop('target')
+
+                    outputs = vmapped_forward(chunk_params, chunk_buffers, batch_gpu)
+                    chunk_batch_preds.append(outputs['prediction'])  # (C, batch_size)
+
+                    if all_targets is None:
+                        batch_targets.append(target)
+
+                # (C, total_samples)
+                chunk_preds = torch.cat(chunk_batch_preds, dim=1)
+                all_chunk_preds.append(chunk_preds)
+
+                if all_targets is None:
+                    all_targets = torch.cat(batch_targets)  # (total_samples,)
+
+        # (N, total_samples)
+        all_preds = torch.cat(all_chunk_preds, dim=0)
+
+        # Compute fitness: -RMSE per worker (vectorized, no Python loop)
+        errors = all_preds - all_targets.unsqueeze(0)  # (N, total_samples)
+        rmse_per_worker = torch.sqrt(torch.mean(errors ** 2, dim=1))  # (N,)
+        fitness_scores = -rmse_per_worker  # EGGROLL maximizes
+
+        return fitness_scores, all_factors, signs
 
     # ------------------------------------------------------------------
     # Fitness shaping
     # ------------------------------------------------------------------
 
     def _rank_transform(self, fitness: torch.Tensor) -> torch.Tensor:
-        """Rank-based fitness shaping → [-0.5, 0.5] (robust to outliers)."""
         N = len(fitness)
         ranks = torch.zeros_like(fitness)
         sorted_indices = torch.argsort(fitness)
@@ -312,23 +358,19 @@ class EGGROLL:
         return ranks / (N - 1)
 
     def _normalize_fitness(self, fitness: torch.Tensor) -> torch.Tensor:
-        """Z-score normalization (fallback)."""
         std = fitness.std()
         if std > 1e-8:
             return (fitness - fitness.mean()) / std
         return fitness - fitness.mean()
 
     # ------------------------------------------------------------------
-    # Update computation (einsum, memory-efficient)
+    # Update computation (einsum)
     # ------------------------------------------------------------------
 
     def _compute_updates(
-        self,
-        all_factors: List[Dict],
-        signs: List[float],
+        self, all_factors: List[Dict], signs: List[float],
         fitness_scores: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        """Eq. 8: Δμ = (α/N) * Σ_i f_i * E_i  (via einsum)."""
         updates = {}
         for name in self.param_names:
             A_list = []
@@ -342,45 +384,61 @@ class EGGROLL:
             )
         return updates
 
-    def _apply_updates(self, updates: Dict[str, torch.Tensor]):
-        """Apply Δμ to model parameters.
+    def _apply_updates(self, raw_gradients: Dict[str, torch.Tensor]):
+        t = self.generation + 1
 
-        Note: updates are scaled by √N to match repo gốc convention:
-            grad = -(update * √N)  →  param += lr * (-grad) = lr * update * √N
-        This is equivalent to the repo gốc's:
-            return -(new_grad * jnp.sqrt(fitnesses.size))
-        followed by optax SGD update.
-        """
-        N = self.config.population_size
-        scale = self.current_lr * np.sqrt(N)
         with torch.no_grad():
             for name, param in self.model.named_parameters():
-                if name in updates:
-                    param.add_(scale * updates[name])
-                    if self.config.weight_decay > 0:
-                        param.mul_(1 - self.config.weight_decay)
+                if name not in raw_gradients:
+                    continue
+
+                g = raw_gradients[name]
+
+                if self.config.optimizer == 'adam':
+                    beta1 = self.config.adam_beta1
+                    beta2 = self.config.adam_beta2
+                    eps = self.config.adam_eps
+
+                    self.adam_m[name].mul_(beta1).add_(g, alpha=1 - beta1)
+                    self.adam_v[name].mul_(beta2).addcmul_(g, g, value=1 - beta2)
+
+                    m_hat = self.adam_m[name] / (1 - beta1 ** t)
+                    v_hat = self.adam_v[name] / (1 - beta2 ** t)
+
+                    param.add_(self.current_lr * m_hat / (v_hat.sqrt() + eps))
+                else:
+                    param.add_(self.current_lr * np.sqrt(self.config.population_size) * g)
+
+                if self.config.weight_decay > 0:
+                    param.mul_(1 - self.config.weight_decay * self.current_lr)
 
     # ------------------------------------------------------------------
     # Main step
     # ------------------------------------------------------------------
 
-    def step(self, fitness_fn: Callable, data: Any = None,
+    def step(self, fitness_fn: Callable = None, data: Any = None,
+             cached_batches: list = None,
              verbose: bool = False) -> Dict[str, float]:
-        """
-        One EGGROLL generation:
-            1. Sample N perturbations (N/2 if antithetic)
-            2. Evaluate fitness with save/restore
-            3. Shape fitness scores
-            4. Compute & apply update
-            5. Decay lr and sigma
+        """One EGGROLL generation.
+
+        Args:
+            fitness_fn: Legacy sequential fitness function (ignored if cached_batches provided)
+            data: Legacy data arg (ignored if cached_batches provided)
+            cached_batches: List of data batches for vmap-parallel evaluation
         """
         # 1. Sample
         perturbation_samples = self._sample_perturbations()
 
-        # 2. Evaluate
-        fitness_scores, all_factors, signs_list = self._evaluate_fitness(
-            fitness_fn, data, perturbation_samples
-        )
+        # 2. Evaluate (vmap-parallel if cached_batches provided)
+        if cached_batches is not None:
+            fitness_scores, all_factors, signs_list = self._evaluate_fitness_vmap(
+                cached_batches, perturbation_samples
+            )
+        else:
+            # Fallback: sequential (legacy)
+            fitness_scores, all_factors, signs_list = self._evaluate_fitness_sequential(
+                fitness_fn, data, perturbation_samples
+            )
 
         # 3. Record raw stats
         stats = {
@@ -406,7 +464,10 @@ class EGGROLL:
         updates = self._compute_updates(all_factors, signs_list, shaped)
         self._apply_updates(updates)
 
-        # 6. Decay
+        # 6. Sync func_model with updated model weights
+        self._sync_func_model()
+
+        # 7. Decay
         self.current_lr *= self.config.lr_decay
         self.current_sigma *= self.config.sigma_decay
         self.generation += 1
@@ -423,11 +484,80 @@ class EGGROLL:
         return stats
 
     # ------------------------------------------------------------------
+    # Sync func_model after parameter updates
+    # ------------------------------------------------------------------
+
+    def _sync_func_model(self):
+        """Recreate func_model from self.model to avoid vmap context contamination."""
+        del self._func_model
+        self._func_model = copy.deepcopy(self.model)
+        self._func_model.eval()
+        self._buffers = {k: v for k, v in self._func_model.named_buffers()}
+
+    # ------------------------------------------------------------------
+    # Legacy sequential evaluation (fallback)
+    # ------------------------------------------------------------------
+
+    def _evaluate_fitness_sequential(
+        self, fitness_fn: Callable, data: Any,
+        perturbation_samples: List[Dict],
+    ) -> Tuple[torch.Tensor, List[Dict], List[float]]:
+        """Sequential fallback (old approach)."""
+        fitness_scores = []
+        all_factors = []
+        signs = []
+
+        snapshot = {name: param.data.clone()
+                    for name, param in self.model.named_parameters()
+                    if name in self.perturbations}
+        self.model.eval()
+
+        for factors in perturbation_samples:
+            # +σE
+            with torch.no_grad():
+                for name, param in self.model.named_parameters():
+                    if name in snapshot:
+                        param.data.copy_(snapshot[name])
+                for name, param in self.model.named_parameters():
+                    if name in factors:
+                        A, B = factors[name]
+                        E = self.perturbations[name].construct_perturbation(A, B)
+                        param.add_(self.current_sigma * E)
+            with torch.no_grad():
+                fitness_scores.append(fitness_fn(self.model, data))
+            all_factors.append(factors)
+            signs.append(1.0)
+
+            # -σE
+            if self.config.use_antithetic:
+                with torch.no_grad():
+                    for name, param in self.model.named_parameters():
+                        if name in snapshot:
+                            param.data.copy_(snapshot[name])
+                    for name, param in self.model.named_parameters():
+                        if name in factors:
+                            A, B = factors[name]
+                            E = self.perturbations[name].construct_perturbation(A, B)
+                            param.add_(-self.current_sigma * E)
+                with torch.no_grad():
+                    fitness_scores.append(fitness_fn(self.model, data))
+                all_factors.append(factors)
+                signs.append(-1.0)
+
+        # Restore
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if name in snapshot:
+                    param.data.copy_(snapshot[name])
+
+        return torch.tensor(fitness_scores, device=self.device), all_factors, signs
+
+    # ------------------------------------------------------------------
     # Checkpointing
     # ------------------------------------------------------------------
 
     def state_dict(self) -> Dict:
-        return {
+        state = {
             'generation': self.generation,
             'best_fitness': self.best_fitness,
             'current_lr': self.current_lr,
@@ -435,6 +565,10 @@ class EGGROLL:
             'fitness_history': self.fitness_history,
             'rng_state': self.rng.get_state(),
         }
+        if self.config.optimizer == 'adam':
+            state['adam_m'] = {k: v.clone() for k, v in self.adam_m.items()}
+            state['adam_v'] = {k: v.clone() for k, v in self.adam_v.items()}
+        return state
 
     def load_state_dict(self, state: Dict):
         self.generation = state['generation']
@@ -443,3 +577,6 @@ class EGGROLL:
         self.current_sigma = state['current_sigma']
         self.fitness_history = state['fitness_history']
         self.rng.set_state(state['rng_state'])
+        if 'adam_m' in state:
+            self.adam_m = state['adam_m']
+            self.adam_v = state['adam_v']
