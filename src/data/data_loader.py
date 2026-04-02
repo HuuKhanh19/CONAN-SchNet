@@ -231,20 +231,25 @@ class SchNetMolDataset(Dataset):
         self._filter_failures()
 
     def _generate_conformers(self):
-        """Generate 3D conformers for all molecules."""
+        """Generate 3D conformers for all molecules, sorted by energy."""
         from rdkit.Chem import GetPeriodicTable
         pt = GetPeriodicTable()
-
+ 
         print(f"  Generating conformers for {len(self.smiles)} molecules...")
         for i, smi in enumerate(self.smiles):
-            atoms_list, coords_list = inner_smi2coords(
+            # Call with return_energy=True to get energies for sorting
+            result = inner_smi2coords(
                 smi=smi,
                 seed=self.random_seed_gen,
                 mode='fast',
                 optimize=self.optimize_mmff,
                 n_confs=self.num_conformers,
+                return_energy=True,
             )
-
+ 
+            # return_energy=True returns 3 values: (atoms_list, coords_list, energies)
+            atoms_list, coords_list, energies = result
+ 
             if (
                 atoms_list is None or len(atoms_list) == 0
                 or atoms_list[0] is None or len(atoms_list[0]) == 0
@@ -258,20 +263,33 @@ class SchNetMolDataset(Dataset):
                     dtype=np.int64,
                 )
                 n_atoms = len(z)
-
+ 
+                # Collect valid conformers WITH their energies
                 valid_coords = []
-                for conf in coords_list:
+                valid_energies = []
+                for conf_idx, conf in enumerate(coords_list):
                     conf = np.asarray(conf, dtype=np.float32)
                     if conf.ndim == 2 and conf.shape == (n_atoms, 3):
                         valid_coords.append(conf)
-
+                        # Get energy for this conformer
+                        if conf_idx < len(energies):
+                            valid_energies.append(float(energies[conf_idx]))
+                        else:
+                            valid_energies.append(float('inf'))
+ 
                 if len(valid_coords) == 0:
                     self.atomic_numbers.append(None)
                     self.positions.append(None)
                 else:
+                    # Sort conformers by energy (ascending)
+                    # x0 = lowest energy conformer, x_{K-1} = highest
+                    energy_arr = np.array(valid_energies, dtype=np.float32)
+                    sort_order = np.argsort(energy_arr)
+                    sorted_coords = [valid_coords[j] for j in sort_order]
+ 
                     self.atomic_numbers.append(z)
-                    self.positions.append(np.stack(valid_coords, axis=0))
-
+                    self.positions.append(np.stack(sorted_coords, axis=0))
+ 
             if (i + 1) % 100 == 0:
                 print(f"    Conformer generation: {i+1}/{len(self.smiles)}")
 

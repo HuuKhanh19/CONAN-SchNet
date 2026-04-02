@@ -228,9 +228,10 @@ class SchNet(nn.Module):
         self,
         inputs: Dict[str, Tensor],
         return_embedding: bool = False,
+        return_atom_emb_only: bool = False,
     ) -> Dict[str, Tensor]:
         """Forward pass with multi-conformer support.
-
+ 
         Args:
             inputs: Dict with keys:
                 _atomic_numbers:  (total_atoms,)         int64
@@ -240,9 +241,12 @@ class SchNet(nn.Module):
                 num_atoms_per_mol: (batch_size,)         int64
                 num_confs_per_mol: (batch_size,)         int64
             return_embedding: If True, also return per-molecule embeddings.
-
+            return_atom_emb_only: If True, return atom embeddings before
+                                  readout (for Step 3 GP combiner).
+ 
         Returns:
-            Dict with 'prediction' and optionally 'embedding', 'mol_embedding'.
+            Dict with 'prediction' and optionally 'embedding', 'mol_embedding',
+            or 'atom_embeddings' if return_atom_emb_only=True.
         """
         z = inputs['_atomic_numbers']
         pos = inputs['_positions']
@@ -250,40 +254,43 @@ class SchNet(nn.Module):
         conf_to_mol = inputs['_idx_conf_to_mol']
         num_atoms_per_mol = inputs['num_atoms_per_mol']
         num_confs_per_mol = inputs['num_confs_per_mol']
-
+ 
         # Atom embedding
         h = self.embedding(z)
-
+ 
         # Build edges within each conformer
         edge_index, edge_weight = self.interaction_graph(pos, atom_to_conf)
         edge_attr = self.distance_expansion(edge_weight)
-
+ 
         # Interaction blocks (residual)
         for interaction in self.interactions:
             h = h + interaction(h, edge_index, edge_weight, edge_attr)
-
+ 
         # Atom-level projection
         h = self.lin1(h)
         h = self.act(h)
         h = self.lin2(h)
-
+ 
+        # Step 3: return atom embeddings before readout
+        if return_atom_emb_only:
+            return {'atom_embeddings': h}
+ 
         # Hierarchical readout: atom → conformer → molecule
         conf_embedding = self.readout(h, atom_to_conf, dim=0)
         mol_embedding = self.readout(conf_embedding, conf_to_mol, dim=0)
-
+ 
         # Prediction
         out = self.mlp_head(mol_embedding).squeeze(-1)
-
+ 
         if self.scale is not None:
             out = out * self.scale
-
+ 
         if self.task_type == "classification":
             out = self.sigmoid(out)
-
+ 
         result = {"prediction": out}
-
+ 
         if return_embedding:
-            # Reconstruct per-molecule atom embeddings
             atom_embeddings_per_mol = []
             atom_offset = 0
             for n_atoms, n_confs in zip(
@@ -294,10 +301,10 @@ class SchNet(nn.Module):
                 h_mol = h_mol.view(n_confs, n_atoms, -1)
                 atom_embeddings_per_mol.append(h_mol)
                 atom_offset += n_total
-
+ 
             result["embedding"] = atom_embeddings_per_mol
             result["mol_embedding"] = mol_embedding.detach()
-
+ 
         return result
 
     # ------------------------------------------------------------------

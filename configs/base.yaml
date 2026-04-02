@@ -1,25 +1,26 @@
 # =============================================================================
 # CONAN-SchNet: Base Configuration (Hydra)
 # =============================================================================
-# Override from CLI:
-#   python scripts/run_step1.py dataset_name=freesolv random_seed_train=42 gpu=0
+# Step 3 usage:
+#   python scripts/run_step3.py dataset_name=esol random_seed_train=0 gpu=1 \
+#       step3.pretrained_path=experiments/step2/esol/seed_2/20260402_013843/best_model.pt
 # =============================================================================
 
 defaults:
   - _self_
 
-# ─── Global Settings ─────────────────────────────────────────────────────────
-dataset_name: esol            # Override: dataset_name=freesolv
-random_seed_train: 0          # Seed for training (model init, optimizer, shuffle)
-gpu: 1
+# ___ Global Settings _________________________________________________________
+dataset_name: esol
+random_seed_train: 0
+gpu: 0
 
-# ─── Experiment ──────────────────────────────────────────────────────────────
+# ___ Experiment ______________________________________________________________
 experiment:
   output_dir: "experiments"
   log_level: "INFO"
-  verbose: false              # Set true to print parameter shapes at startup
+  verbose: false
 
-# ─── Dataset Definitions ────────────────────────────────────────────────────
+# ___ Dataset Definitions ____________________________________________________
 datasets:
   esol:
     name: "esol"
@@ -53,24 +54,24 @@ datasets:
     task_type: "classification"
     metric: "auc"
 
-# ─── Data / Splitting ───────────────────────────────────────────────────────
+# ___ Data / Splitting _______________________________________________________
 data:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
   split_method: "random_scaffold"
-  random_seed_split: 2        # Seed cho scaffold split (tách biệt khỏi training)
+  random_seed_split: 2
 
-# ─── Conformer Generation ───────────────────────────────────────────────────
+# ___ Conformer Generation ___________________________________________________
 conformer:
-  num_conformers: 1
+  num_conformers: 10           # K=10 conformers per molecule for Step 3
   max_attempts: 500
   prune_rms_thresh: 0.0
   use_random_coords: false
   optimize_mmff: true
-  random_seed_gen: 42         # Seed cho ETKDG conformer generation
+  random_seed_gen: 42
 
-# ─── SchNet Model ───────────────────────────────────────────────────────────
+# ___ SchNet Model ___________________________________________________________
 schnet:
   n_atom_basis: 128
   n_interactions: 6
@@ -79,7 +80,7 @@ schnet:
   n_filters: 128
   atomref: null
 
-# ─── Training (Step 1 – Adam baseline) ──────────────────────────────────────
+# ___ Training (Step 1 _ Adam baseline) ______________________________________
 training:
   epochs: 300
   batch_size: 32
@@ -92,35 +93,79 @@ training:
   save_checkpoints: true
   gradient_clip: 1.0
 
-# ─── EGGROLL (Step 2) ──────────────────────────────────────────────────────
+# ___ EGGROLL (Step 2) ______________________________________________________
 eggroll:
-  # Core (Eq. 8 in paper)
-  population_size: 128           # N: number of perturbations per generation
-  rank: 1                       # r: rank of each perturbation (N*r=128 ≥ min(m,n))
-  sigma: 0.01                   # σ: noise scale for perturbations
-  learning_rate: 0.001          # α: for Adam, same scale as Step 1 (Adam normalizes internally)
-                                #    for SGD, scale by √N internally
+  population_size: 32
+  rank: 4
+  sigma: 0.01
+  learning_rate: 0.001
+  optimizer: "sgd"
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_eps: 0.00000001
+  normalize_fitness: true
+  rank_transform: false
+  centered_rank: true
+  use_antithetic: true
+  lr_decay: 0.99
+  sigma_decay: 0.99
+  weight_decay: 0.00001
+  num_generations: 400
+  patience: 150
+  eval_every: 5
 
-  # Inner optimizer for ES gradient (matching repo gốc optax support)
-  optimizer: "sgd"             # 'sgd' or 'adam' — adam tracks momentum of ES gradient
-  adam_beta1: 0.9               # first moment decay (smooth over ~10 generations)
-  adam_beta2: 0.999             # second moment decay (adaptive per-param lr)
-  adam_eps: 0.00000001          # numerical stability
-
-  # Fitness shaping (repo gốc default: z-score)
-  normalize_fitness: true       # z-score: (f - mean) / std
-  rank_transform: false         # if true, use rank-based shaping instead of z-score
-  centered_rank: true           # only used if rank_transform=true
-
-  # Antithetic sampling
-  use_antithetic: true          # ±E pairs to halve variance
-
-  # Schedules & regularization
-  lr_decay: 0.99                 # lr *= lr_decay each generation (1.0 = no decay, let Adam adapt)
-  sigma_decay: 0.99            # σ *= sigma_decay each generation
-  weight_decay: 0.00001         # L2 regularization (match step 1)
+# ___ Step 3: Joint EGGROLL _ GP ____________________________________________
+step3:
+  # Path to Step 2 pretrained weights
+  pretrained_path: "experiments/step2/esol/seed_2/20260402_013843/best_model.pt"
 
   # Training control
-  num_generations: 400          # max generations
-  patience: 150                 # early stopping patience (in generations)
-  eval_every: 5                 # validate every N generations
+  num_iterations: 500
+  eval_every: 5
+  patience: 100
+
+  # EGGROLL config (can override step 2 defaults)
+  eggroll:
+    population_size: 32          # N=32 (16 unique + 16 antithetic)
+    rank: 4                      # r=4
+    sigma: 0.01
+    learning_rate: 0.001
+    optimizer: "sgd"              # sgd for Step 3 (faster learning)
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 0.00000001
+    normalize_fitness: true
+    rank_transform: false
+    centered_rank: true
+    use_antithetic: true
+    lr_decay: 0.999              # slower decay for Step 3
+    sigma_decay: 0.999
+    weight_decay: 0.00001
+
+  # GP Combiner config
+  gp:
+    population_size: 200         # Q=200 GP trees
+    max_tree_len: 64
+    max_layer_cnt: 4
+    layer_leaf_prob: 0.3
+    const_range: [-1.0, 1.0]
+    using_funcs:
+      - '+'
+      - '-'
+      - '*'
+      - 'loose_div'
+      - 'sin'
+      - 'cos'
+      - 'exp'
+      - 'neg'
+      - 'abs'
+      - 'tanh'
+      - 'loose_sqrt'
+    tournament_size: 7
+    crossover_rate: 0.8
+    mutation_rate: 0.15
+
+  # Memory chunking (adjust based on GPU memory)
+  chunking:
+    n_chunk: 8                   # process 8 perturbations at a time for GP
+    q_chunk: 20                  # process 20 GP trees at a time
