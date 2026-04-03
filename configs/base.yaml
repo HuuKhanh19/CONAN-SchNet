@@ -60,7 +60,7 @@ data:
   processed_dir: "data/processed"
   split_ratio: [0.8, 0.1, 0.1]
   split_method: "random_scaffold"
-  random_seed_split: 2
+  random_seed_split: 0
 
 # ___ Conformer Generation ___________________________________________________
 conformer:
@@ -107,8 +107,8 @@ eggroll:
   rank_transform: false
   centered_rank: true
   use_antithetic: true
-  lr_decay: 0.99
-  sigma_decay: 0.99
+  lr_decay: 0.999
+  sigma_decay: 0.999
   weight_decay: 0.00001
   num_generations: 400
   patience: 150
@@ -129,7 +129,7 @@ step3:
     population_size: 32          # N=32 (16 unique + 16 antithetic)
     rank: 4                      # r=4
     sigma: 0.01
-    learning_rate: 0.001
+    learning_rate: 0.0005
     optimizer: "sgd"              # sgd for Step 3 (faster learning)
     adam_beta1: 0.9
     adam_beta2: 0.999
@@ -145,8 +145,8 @@ step3:
   # GP Combiner config
   gp:
     population_size: 200         # Q=200 GP trees
-    max_tree_len: 64
-    max_layer_cnt: 4
+    max_tree_len: 127
+    max_layer_cnt: 5
     layer_leaf_prob: 0.3
     const_range: [-1.0, 1.0]
     using_funcs:
@@ -161,11 +161,11 @@ step3:
       - 'abs'
       - 'tanh'
       - 'loose_sqrt'
-    tournament_size: 7
+    tournament_size: 8
     crossover_rate: 0.8
     mutation_rate: 0.15
 
   # Memory chunking (adjust based on GPU memory)
   chunking:
-    n_chunk: 8                   # process 8 perturbations at a time for GP
-    q_chunk: 20                  # process 20 GP trees at a time
+    n_chunk: 4                   # process 8 perturbations at a time for GP
+    q_chunk: 10                  # process 20 GP trees at a time
