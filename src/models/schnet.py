@@ -178,7 +178,8 @@ class SchNet(nn.Module):
         self.task_type = task_type
 
         # Atom embedding (Z=0..119)
-        self.embedding = Embedding(120, hidden_channels)
+        # self.embedding = Embedding(120, hidden_channels)
+        self.embedding = Embedding(120, hidden_channels, padding_idx=0)
 
         # Radius graph builder
         self.interaction_graph = RadiusInteractionGraph(cutoff, max_num_neighbors)
@@ -209,7 +210,8 @@ class SchNet(nn.Module):
         # MLP prediction head (molecule embedding → scalar)
         self.mlp_head = Sequential(
             Linear(hidden_channels, hidden_channels // 2),
-            ShiftedSoftplus(),
+            # ShiftedSoftplus(),
+            nn.GELU(),
             Linear(hidden_channels // 2, 1),
         )
 
@@ -223,6 +225,110 @@ class SchNet(nn.Module):
         self.lin1.bias.data.fill_(0)
         torch.nn.init.xavier_uniform_(self.lin2.weight)
         self.lin2.bias.data.fill_(0)
+        torch.nn.init.xavier_uniform_(self.mlp_head[0].weight)
+        self.mlp_head[0].bias.data.fill_(0)
+        torch.nn.init.xavier_uniform_(self.mlp_head[2].weight)
+        self.mlp_head[2].bias.data.fill_(0)
+        
+        
+    # def load_pretrained_model(self, model: nn.Module):
+    #     ckpt = SchNet.from_qm9_pretrained(r"C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet\", 0)
+    #     model.load_state_dict(ckpt.state_dict())
+    #     return model
+    
+    # @staticmethod
+    # def from_qm9_pretrained(
+    #     root: str,
+    #     target: int,
+    # ) -> Tuple['SchNet', Dataset, Dataset, Dataset]:  # pragma: no cover
+    #     """Returns a pre-trained :class:`SchNet` model on the
+    #     :class:`~torch_geometric.datasets.QM9` dataset, trained on the
+    #     specified target :obj:`target`.
+    #     """
+    #     import ase
+    #     import schnetpack as spk  # noqa
+
+    #     assert target >= 0 and target <= 12
+    #     is_dipole = target == 0
+
+    #     units = [1] * 12
+    #     units[0] = ase.units.Debye
+    #     units[1] = ase.units.Bohr**3
+    #     units[5] = ase.units.Bohr**2
+
+    #     # root = 
+    #     os.makedirs(root, exist_ok=True)
+    #     folder = 'trained_schnet_models'
+
+    #     name = f'qm9_{qm9_target_dict[target]}'
+    #     path = osp.join(root, 'trained_schnet_models', name, 'split.npz')
+
+    #     split = np.load(path)
+    #     train_idx = split['train_idx']
+    #     val_idx = split['val_idx']
+    #     test_idx = split['test_idx']
+
+    #     # Filter the splits to only contain characterized molecules.
+    #     assoc = idx.new_empty(idx.max().item() + 1)
+    #     assoc[idx] = torch.arange(idx.size(0))
+
+    #     train_idx = assoc[train_idx[np.isin(train_idx, idx)]]
+    #     val_idx = assoc[val_idx[np.isin(val_idx, idx)]]
+    #     test_idx = assoc[test_idx[np.isin(test_idx, idx)]]
+
+    #     path = osp.join(root, 'trained_schnet_models', name, 'best_model')
+
+    #     with warnings.catch_warnings():
+    #         warnings.simplefilter('ignore')
+    #         state = fs.torch_load(path, map_location='cpu')
+
+    #     net = SchNet(
+    #         hidden_channels=128,
+    #         num_filters=128,
+    #         num_interactions=6,
+    #         num_gaussians=50,
+    #         cutoff=10.0,
+    #         dipole=is_dipole,
+    #         atomref=None
+    #     )
+
+    #     net.embedding.weight = state.representation.embedding.weight
+
+    #     for int1, int2 in zip(state.representation.interactions,
+    #                           net.interactions):
+    #         int2.mlp[0].weight = int1.filter_network[0].weight
+    #         int2.mlp[0].bias = int1.filter_network[0].bias
+    #         int2.mlp[2].weight = int1.filter_network[1].weight
+    #         int2.mlp[2].bias = int1.filter_network[1].bias
+    #         int2.lin.weight = int1.dense.weight
+    #         int2.lin.bias = int1.dense.bias
+
+    #         int2.conv.lin1.weight = int1.cfconv.in2f.weight
+    #         int2.conv.lin2.weight = int1.cfconv.f2out.weight
+    #         int2.conv.lin2.bias = int1.cfconv.f2out.bias
+
+    #     net.lin1.weight = state.output_modules[0].out_net[1].out_net[0].weight
+    #     net.lin1.bias = state.output_modules[0].out_net[1].out_net[0].bias
+    #     net.lin2.weight = state.output_modules[0].out_net[1].out_net[1].weight
+    #     net.lin2.bias = state.output_modules[0].out_net[1].out_net[1].bias
+
+    #     mean = state.output_modules[0].atom_pool.average
+    #     net.readout = aggr_resolver('mean' if mean is True else 'add')
+
+    #     dipole = state.output_modules[0].__class__.__name__ == 'DipoleMoment'
+    #     net.dipole = dipole
+
+    #     net.mean = state.output_modules[0].standardize.mean.item()
+    #     net.std = state.output_modules[0].standardize.stddev.item()
+
+    #     if state.output_modules[0].atomref is not None:
+    #         net.atomref.weight = state.output_modules[0].atomref.weight
+    #     else:
+    #         net.atomref = None
+
+    #     net.scale = 1.0 / units[target]
+
+    #     return net
 
     def forward(
         self,
@@ -346,7 +452,7 @@ class SchNet(nn.Module):
 def build_schnet_model(config: Dict) -> SchNet:
     """Build SchNet model from config dict."""
     schnet_cfg = config.get('schnet', {})
-    return SchNet(
+    schnet_model = SchNet(
         hidden_channels=schnet_cfg.get('n_atom_basis', 128),
         out_channels=128,
         num_filters=schnet_cfg.get('n_filters', 128),
@@ -358,3 +464,5 @@ def build_schnet_model(config: Dict) -> SchNet:
         scale=None,
         task_type=config['dataset']['task_type'],
     )
+    # schnet_model = schnet_model.load_pretrained_model(schnet_model)
+    return schnet_model
