@@ -6,6 +6,7 @@ data/raw/*.csv
 data/processed/
 experiments/
 logs/
+pretrained/
 *.pkl
 *.pt
 *.pth
