@@ -10,4 +10,5 @@ pretrained/
 *.pkl
 *.pt
 *.pth
+*.log
 .DS_Store
