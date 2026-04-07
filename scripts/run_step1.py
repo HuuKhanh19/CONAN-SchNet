@@ -6,6 +6,7 @@ import sys
 import torch
 import hydra
 import pandas as pd
+import numpy as np
 import time
 from omegaconf import DictConfig, OmegaConf
 
@@ -21,7 +22,7 @@ from src.utils.utils import seed_everything
 def run_step1(config: dict, device: torch.device):
     dataset_name = config['dataset']['name']
 
-    # ── Seed everything FIRST ────────────────────────────────────────────
+    # -- Seed everything FIRST --
     train_seed = config['random_seed_train']
     seed_everything(train_seed)
     print(f"random_seed_train={train_seed}")
@@ -30,7 +31,7 @@ def run_step1(config: dict, device: torch.device):
     print(f"Step 1: SchNet Baseline - {dataset_name.upper()}")
     print(f"{'='*60}")
 
-    # ── Load or prepare data ─────────────────────────────────────────────
+    # -- Load or prepare data --
     base_dir = config['data']['processed_dir']
     split_seed = config['data']['random_seed_split']
     ds_dir = f"{base_dir}/{dataset_name}/seed_{split_seed}"
@@ -43,7 +44,7 @@ def run_step1(config: dict, device: torch.device):
     else:
         print("Preprocessed data not found, running preprocessing...")
         train_df, valid_df, test_df = prepare_dataset(config)
-        save_splits(train_df, valid_df, test_df, ds_dir)  # FIX: removed extra arg
+        save_splits(train_df, valid_df, test_df, ds_dir)
 
     print(f"Data: train={len(train_df)}, valid={len(valid_df)}, test={len(test_df)}")
 
@@ -51,8 +52,19 @@ def run_step1(config: dict, device: torch.device):
         config, train_df, valid_df, test_df
     )
 
-    # ── Build model (ONCE) ───────────────────────────────────────────────
+    # -- Build model --
     model = build_schnet_model(config)
+
+    # -- Initialize output bias from training data --
+    # This makes initial prediction ~ mean(target), so initial RMSE ~ std(target)
+    mean_target = float(train_df['target'].mean())
+    # Compute mean number of atoms from the dataset
+    mean_n_atoms = float(np.mean([
+        len(z) for z in train_loader.dataset.atomic_numbers
+    ]))
+    model.init_output_bias(mean_target, mean_n_atoms,
+                           num_conformers=config['conformer']['num_conformers'])
+
     print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
 
     # Optional verbose parameter dump
@@ -65,7 +77,7 @@ def run_step1(config: dict, device: torch.device):
                 print(f"  {name:<50s} | {str(list(param.shape)):<20s} | {param.numel():,}")
         print("=" * 60)
 
-    # ── Train ────────────────────────────────────────────────────────────
+    # -- Train --
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     exp_dir = os.path.join(
         config['experiment']['output_dir'],

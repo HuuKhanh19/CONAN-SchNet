@@ -1,12 +1,12 @@
 """
 SchNet: Continuous-filter convolutional neural network for molecular properties.
 
-Architecture (CONAN-SchNet variant with multi-conformer support):
-    atoms → Embedding → [InteractionBlock × N] → lin1 → act → lin2
-    → readout(atom→conformer) → readout(conformer→molecule) → MLP head → prediction
+Architecture (matching PyG original, with multi-conformer readout):
+    atoms -> Embedding -> [InteractionBlock x N] -> lin1(H->H/2) -> SSP -> lin2(H/2->1)
+    -> readout(atom->conformer) -> readout(conformer->molecule) -> scalar prediction
 
 References:
-    Schütt et al. "SchNet: A continuous-filter convolutional neural network
+    Schutt et al. "SchNet: A continuous-filter convolutional neural network
     for modeling quantum interactions." (NeurIPS 2017)
 """
 
@@ -21,9 +21,6 @@ from torch.nn import Embedding, Linear, ModuleList, Sequential
 
 from torch_geometric.nn import MessagePassing, radius_graph
 from torch_geometric.nn.resolver import aggregation_resolver as aggr_resolver
-
-# NOTE: Do NOT call set_seed() at module level. Seeds must be controlled
-#       by the training script via seed_everything() BEFORE model construction.
 
 
 # =============================================================================
@@ -107,7 +104,7 @@ class InteractionBlock(nn.Module):
         torch.nn.init.xavier_uniform_(self.mlp[0].weight)
         self.mlp[0].bias.data.fill_(0)
         torch.nn.init.xavier_uniform_(self.mlp[2].weight)
-        self.mlp[2].bias.data.fill_(0)  # FIX: was mlp[0] (copy-paste bug)
+        self.mlp[2].bias.data.fill_(0)
         self.conv.reset_parameters()
         torch.nn.init.xavier_uniform_(self.lin.weight)
         self.lin.bias.data.fill_(0)
@@ -145,19 +142,19 @@ class RadiusInteractionGraph(nn.Module):
 class SchNet(nn.Module):
     """SchNet with multi-conformer readout for molecular property prediction.
 
-    Forward pass:
-        1. Embed atomic numbers
+    Architecture matches PyG's original SchNet exactly:
+        1. Embed atomic numbers                          -> (N, H)
         2. Build radius graph per conformer
-        3. N interaction blocks with residual connections
-        4. Linear projection: hidden → out_channels
-        5. Readout: atom → conformer → molecule
-        6. MLP head → scalar prediction
+        3. N interaction blocks with residual connections -> (N, H)
+        4. lin1: H -> H//2, ShiftedSoftplus              -> (N, H//2)
+        5. lin2: H//2 -> 1                               -> (N, 1)
+        6. Readout: atom -> conformer -> molecule         -> (B, 1)
+        7. Sigmoid for classification                     -> scalar
     """
 
     def __init__(
         self,
         hidden_channels: int = 128,
-        out_channels: int = 128,
         num_filters: int = 128,
         num_interactions: int = 6,
         num_gaussians: int = 50,
@@ -177,9 +174,8 @@ class SchNet(nn.Module):
         self.scale = scale
         self.task_type = task_type
 
-        # Atom embedding (Z=0..119)
-        # self.embedding = Embedding(120, hidden_channels)
-        self.embedding = Embedding(120, hidden_channels, padding_idx=0)
+        # Atom embedding (Z=0..99, padding_idx=0) -- matches PyG exactly
+        self.embedding = Embedding(100, hidden_channels, padding_idx=0)
 
         # Radius graph builder
         self.interaction_graph = RadiusInteractionGraph(cutoff, max_num_neighbors)
@@ -196,24 +192,16 @@ class SchNet(nn.Module):
             for _ in range(num_interactions)
         ])
 
-        # Atom-level projection
-        self.lin1 = Linear(hidden_channels, hidden_channels)
+        # Atom-level output network (matches PyG original)
+        self.lin1 = Linear(hidden_channels, hidden_channels // 2)
         self.act = ShiftedSoftplus()
-        self.lin2 = Linear(hidden_channels, out_channels)
+        self.lin2 = Linear(hidden_channels // 2, 1)
 
         # Classification head
         if task_type == "classification":
             self.sigmoid = nn.Sigmoid()
         else:
             self.sigmoid = nn.Identity()
-
-        # MLP prediction head (molecule embedding → scalar)
-        self.mlp_head = Sequential(
-            Linear(hidden_channels, hidden_channels // 2),
-            # ShiftedSoftplus(),
-            nn.GELU(),
-            Linear(hidden_channels // 2, 1),
-        )
 
         self.reset_parameters()
 
@@ -225,110 +213,6 @@ class SchNet(nn.Module):
         self.lin1.bias.data.fill_(0)
         torch.nn.init.xavier_uniform_(self.lin2.weight)
         self.lin2.bias.data.fill_(0)
-        torch.nn.init.xavier_uniform_(self.mlp_head[0].weight)
-        self.mlp_head[0].bias.data.fill_(0)
-        torch.nn.init.xavier_uniform_(self.mlp_head[2].weight)
-        self.mlp_head[2].bias.data.fill_(0)
-        
-        
-    # def load_pretrained_model(self, model: nn.Module):
-    #     ckpt = SchNet.from_qm9_pretrained(r"C:\Users\BKAI\ducluong\DrugOptimization\CONAN-SchNet\", 0)
-    #     model.load_state_dict(ckpt.state_dict())
-    #     return model
-    
-    # @staticmethod
-    # def from_qm9_pretrained(
-    #     root: str,
-    #     target: int,
-    # ) -> Tuple['SchNet', Dataset, Dataset, Dataset]:  # pragma: no cover
-    #     """Returns a pre-trained :class:`SchNet` model on the
-    #     :class:`~torch_geometric.datasets.QM9` dataset, trained on the
-    #     specified target :obj:`target`.
-    #     """
-    #     import ase
-    #     import schnetpack as spk  # noqa
-
-    #     assert target >= 0 and target <= 12
-    #     is_dipole = target == 0
-
-    #     units = [1] * 12
-    #     units[0] = ase.units.Debye
-    #     units[1] = ase.units.Bohr**3
-    #     units[5] = ase.units.Bohr**2
-
-    #     # root = 
-    #     os.makedirs(root, exist_ok=True)
-    #     folder = 'trained_schnet_models'
-
-    #     name = f'qm9_{qm9_target_dict[target]}'
-    #     path = osp.join(root, 'trained_schnet_models', name, 'split.npz')
-
-    #     split = np.load(path)
-    #     train_idx = split['train_idx']
-    #     val_idx = split['val_idx']
-    #     test_idx = split['test_idx']
-
-    #     # Filter the splits to only contain characterized molecules.
-    #     assoc = idx.new_empty(idx.max().item() + 1)
-    #     assoc[idx] = torch.arange(idx.size(0))
-
-    #     train_idx = assoc[train_idx[np.isin(train_idx, idx)]]
-    #     val_idx = assoc[val_idx[np.isin(val_idx, idx)]]
-    #     test_idx = assoc[test_idx[np.isin(test_idx, idx)]]
-
-    #     path = osp.join(root, 'trained_schnet_models', name, 'best_model')
-
-    #     with warnings.catch_warnings():
-    #         warnings.simplefilter('ignore')
-    #         state = fs.torch_load(path, map_location='cpu')
-
-    #     net = SchNet(
-    #         hidden_channels=128,
-    #         num_filters=128,
-    #         num_interactions=6,
-    #         num_gaussians=50,
-    #         cutoff=10.0,
-    #         dipole=is_dipole,
-    #         atomref=None
-    #     )
-
-    #     net.embedding.weight = state.representation.embedding.weight
-
-    #     for int1, int2 in zip(state.representation.interactions,
-    #                           net.interactions):
-    #         int2.mlp[0].weight = int1.filter_network[0].weight
-    #         int2.mlp[0].bias = int1.filter_network[0].bias
-    #         int2.mlp[2].weight = int1.filter_network[1].weight
-    #         int2.mlp[2].bias = int1.filter_network[1].bias
-    #         int2.lin.weight = int1.dense.weight
-    #         int2.lin.bias = int1.dense.bias
-
-    #         int2.conv.lin1.weight = int1.cfconv.in2f.weight
-    #         int2.conv.lin2.weight = int1.cfconv.f2out.weight
-    #         int2.conv.lin2.bias = int1.cfconv.f2out.bias
-
-    #     net.lin1.weight = state.output_modules[0].out_net[1].out_net[0].weight
-    #     net.lin1.bias = state.output_modules[0].out_net[1].out_net[0].bias
-    #     net.lin2.weight = state.output_modules[0].out_net[1].out_net[1].weight
-    #     net.lin2.bias = state.output_modules[0].out_net[1].out_net[1].bias
-
-    #     mean = state.output_modules[0].atom_pool.average
-    #     net.readout = aggr_resolver('mean' if mean is True else 'add')
-
-    #     dipole = state.output_modules[0].__class__.__name__ == 'DipoleMoment'
-    #     net.dipole = dipole
-
-    #     net.mean = state.output_modules[0].standardize.mean.item()
-    #     net.std = state.output_modules[0].standardize.stddev.item()
-
-    #     if state.output_modules[0].atomref is not None:
-    #         net.atomref.weight = state.output_modules[0].atomref.weight
-    #     else:
-    #         net.atomref = None
-
-    #     net.scale = 1.0 / units[target]
-
-    #     return net
 
     def forward(
         self,
@@ -336,81 +220,53 @@ class SchNet(nn.Module):
         return_embedding: bool = False,
         return_atom_emb_only: bool = False,
     ) -> Dict[str, Tensor]:
-        """Forward pass with multi-conformer support.
- 
-        Args:
-            inputs: Dict with keys:
-                _atomic_numbers:  (total_atoms,)         int64
-                _positions:       (total_atoms, 3)       float32
-                _idx_atom_to_conf: (total_atoms,)        int64
-                _idx_conf_to_mol:  (num_total_confs,)    int64
-                num_atoms_per_mol: (batch_size,)         int64
-                num_confs_per_mol: (batch_size,)         int64
-            return_embedding: If True, also return per-molecule embeddings.
-            return_atom_emb_only: If True, return atom embeddings before
-                                  readout (for Step 3 GP combiner).
- 
-        Returns:
-            Dict with 'prediction' and optionally 'embedding', 'mol_embedding',
-            or 'atom_embeddings' if return_atom_emb_only=True.
-        """
+        """Forward pass with multi-conformer support."""
         z = inputs['_atomic_numbers']
         pos = inputs['_positions']
         atom_to_conf = inputs['_idx_atom_to_conf']
         conf_to_mol = inputs['_idx_conf_to_mol']
         num_atoms_per_mol = inputs['num_atoms_per_mol']
         num_confs_per_mol = inputs['num_confs_per_mol']
- 
-        # Atom embedding
+
+        # 1. Atom embedding
         h = self.embedding(z)
- 
-        # Build edges within each conformer
+
+        # 2. Build edges within each conformer
         edge_index, edge_weight = self.interaction_graph(pos, atom_to_conf)
         edge_attr = self.distance_expansion(edge_weight)
- 
-        # Interaction blocks (residual)
+
+        # 3. Interaction blocks (residual)
         for interaction in self.interactions:
             h = h + interaction(h, edge_index, edge_weight, edge_attr)
- 
-        # Atom-level projection
+
+        # Step 3 hook: return hidden atom embeddings (H-dim) before output net
+        if return_atom_emb_only:
+            return {'atom_embeddings': h}
+
+        # 4. Output network: H -> H//2 -> 1 (per-atom scalar)
         h = self.lin1(h)
         h = self.act(h)
         h = self.lin2(h)
- 
-        # Step 3: return atom embeddings before readout
-        if return_atom_emb_only:
-            return {'atom_embeddings': h}
- 
-        # Hierarchical readout: atom → conformer → molecule
-        conf_embedding = self.readout(h, atom_to_conf, dim=0)
-        mol_embedding = self.readout(conf_embedding, conf_to_mol, dim=0)
- 
-        # Prediction
-        out = self.mlp_head(mol_embedding).squeeze(-1)
- 
+        # h shape: (total_atoms, 1)
+
+        # 5. Hierarchical readout: atom -> conformer -> molecule
+        conf_out = self.readout(h, atom_to_conf, dim=0)       # (num_confs, 1)
+        mol_out = self.readout(conf_out, conf_to_mol, dim=0)  # (batch_size, 1)
+
+        # 6. Squeeze to scalar
+        out = mol_out.squeeze(-1)  # (batch_size,)
+
         if self.scale is not None:
             out = out * self.scale
- 
+
         if self.task_type == "classification":
             out = self.sigmoid(out)
- 
+
         result = {"prediction": out}
- 
+
         if return_embedding:
-            atom_embeddings_per_mol = []
-            atom_offset = 0
-            for n_atoms, n_confs in zip(
-                num_atoms_per_mol.tolist(), num_confs_per_mol.tolist()
-            ):
-                n_total = n_atoms * n_confs
-                h_mol = h[atom_offset: atom_offset + n_total]
-                h_mol = h_mol.view(n_confs, n_atoms, -1)
-                atom_embeddings_per_mol.append(h_mol)
-                atom_offset += n_total
- 
-            result["embedding"] = atom_embeddings_per_mol
-            result["mol_embedding"] = mol_embedding.detach()
- 
+            result["mol_embedding"] = mol_out.detach()
+
         return result
 
     # ------------------------------------------------------------------
@@ -420,7 +276,7 @@ class SchNet(nn.Module):
     def get_embedding(self, inputs: Dict[str, Tensor]) -> Tensor:
         with torch.no_grad():
             out = self.forward(inputs, return_embedding=True)
-        return out['embedding']
+        return out['mol_embedding']
 
     @property
     def embedding_dim(self) -> int:
@@ -433,6 +289,38 @@ class SchNet(nn.Module):
     @property
     def num_trainable_params(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def init_output_bias(self, mean_target: float, mean_n_atoms: float,
+                         num_conformers: int = 1):
+        """Initialize lin2 bias so initial prediction ~ mean(target).
+
+        With readout='add' at both levels, prediction is:
+            pred ~ K * N_atoms * lin2.bias
+        where K = num_conformers, N_atoms = atoms per molecule.
+
+        So we set: lin2.bias = mean_target / (K * mean_n_atoms)
+
+        Also scales lin1 and lin2 weights small so the learned part
+        starts near zero, letting the bias dominate initially.
+
+        Args:
+            mean_target: Mean of training targets.
+            mean_n_atoms: Mean number of atoms per molecule in training set.
+            num_conformers: Number of conformers per molecule (K).
+        """
+        divisor = max(mean_n_atoms * num_conformers, 1.0)
+        bias_val = mean_target / divisor
+
+        with torch.no_grad():
+            # Scale weights very small so initial output ~ bias only
+            self.lin1.weight.data *= 0.01
+            self.lin1.bias.data.fill_(0)
+            self.lin2.weight.data *= 0.01
+            self.lin2.bias.data.fill_(bias_val)
+
+        print(f"  Output bias init: lin2.bias={bias_val:.6f} "
+              f"(mean_target={mean_target:.4f}, mean_n_atoms={mean_n_atoms:.1f}, "
+              f"K={num_conformers})")
 
     def __repr__(self) -> str:
         return (
@@ -450,11 +338,10 @@ class SchNet(nn.Module):
 # =============================================================================
 
 def build_schnet_model(config: Dict) -> SchNet:
-    """Build SchNet model from config dict."""
+    """Build SchNet model from config dict, optionally with QM9 pretrained backbone."""
     schnet_cfg = config.get('schnet', {})
     schnet_model = SchNet(
         hidden_channels=schnet_cfg.get('n_atom_basis', 128),
-        out_channels=128,
         num_filters=schnet_cfg.get('n_filters', 128),
         num_interactions=schnet_cfg.get('n_interactions', 6),
         num_gaussians=schnet_cfg.get('n_rbf', 50),
@@ -464,5 +351,16 @@ def build_schnet_model(config: Dict) -> SchNet:
         scale=None,
         task_type=config['dataset']['task_type'],
     )
-    # schnet_model = schnet_model.load_pretrained_model(schnet_model)
+
+    # Load QM9 pretrained backbone if configured
+    pretrain_cfg = config.get('pretrain', {})
+    if pretrain_cfg.get('use_qm9_pretrained', False):
+        from .pretrained import load_pretrained_qm9_backbone
+        schnet_model = load_pretrained_qm9_backbone(
+            model=schnet_model,
+            target=pretrain_cfg.get('qm9_target', 7),
+            cache_dir=pretrain_cfg.get('cache_dir', 'pretrained'),
+            verbose=True,
+        )
+
     return schnet_model

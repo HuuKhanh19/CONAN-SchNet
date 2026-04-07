@@ -1,7 +1,7 @@
 """
 Data Loading and Preprocessing for CONAN-SchNet.
 
-Pipeline: CSV → preprocess → scaffold split → conformer generation → DataLoader
+Pipeline: CSV -> preprocess -> scaffold split -> conformer generation -> DataLoader
 """
 
 import os
@@ -413,9 +413,15 @@ def create_dataloaders(
 
     bs = config['training']['batch_size']
 
+    # Create a seeded generator for reproducible shuffling in train loader
+    train_seed = config.get('random_seed_train', 0)
+    g = torch.Generator()
+    g.manual_seed(train_seed)
+
     train_loader = DataLoader(
         datasets['train'], batch_size=bs, shuffle=True,
         collate_fn=collate_multi_conformer, num_workers=0, pin_memory=True,
+        generator=g,
     )
     valid_loader = DataLoader(
         datasets['valid'], batch_size=bs, shuffle=False,
