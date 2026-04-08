@@ -5,7 +5,6 @@
 defaults:
   - _self_
 
-# Disable Hydra auto-generated output directory
 hydra:
   run:
     dir: .
@@ -90,24 +89,26 @@ pretrain:
 
 # ___ Training (Step 1 _ Adam baseline) ______________________________________
 training:
-  epochs: 300
+  epochs: 600
   batch_size: 32
   learning_rate: 0.001
   weight_decay: 0.00001
   scheduler: "reduce_on_plateau"
   scheduler_patience: 25
   scheduler_factor: 0.5
-  early_stopping_patience: 100
+  early_stopping_patience: 200
   save_checkpoints: true
   gradient_clip: 1.0
 
 # ___ EGGROLL (Step 2) _______________________________________________________
+# Tuned to match UniMol EGGROLL config that achieved test RMSE=0.85
 eggroll:
-  sigma: 0.01                  # Perturbation std (normalized per-layer, so can be larger)
-  sigma_decay: 0.99            # No decay (keep sigma fixed for now)
-  rank: 4                     # Low-rank perturbation rank
-  pop_size: 32               # Population size (must be even)
-  group_size: 0               # 0 = global z-score normalization
-  learning_rate: 0.01        # Inner optimizer learning rate (conservative)
-  inner_opt: "sgd"            # SGD more stable than Adam for ES gradients
-  base_seed: 42               # PRNG seed for noise generation
+  sigma: 0.01                 # Perturbation std (keep small for pretrained!)
+  sigma_decay: 0.999           # Decay per epoch (0.01 -> 0.0001 over 460 epochs)
+  rank: 16                    # Low-rank rank (N*r=32*16=512 >= max layer dim=128)
+  pop_size: 128                # Population size (32 workers = 16 antithetical pairs)
+  group_size: 0               # 0 = global rank transform
+  learning_rate: 1.0          # Initial LR (matches UniMol)
+  lr_decay: 0.999              # LR decay per epoch (0.1 -> 0.001 over 460 epochs)
+  inner_opt: "sgd"            # SGD (matches JAX optax.sgd)
+  base_seed: 42               # PRNG seed

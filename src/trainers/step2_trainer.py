@@ -3,9 +3,6 @@ Step 2 Trainer: SchNet with EGGROLL optimizer.
 
 Replaces Adam (Step 1) with EGGROLL evolutionary strategy.
 Same model, same data pipeline, same evaluation -- only the optimizer changes.
-
-Disk usage: best_model.pt + results.json saved ONCE at the end of training.
-No intermediate checkpoints to save disk space.
 """
 
 import os
@@ -23,13 +20,7 @@ from src.optimizers.eggroll import EggrollOptimizer
 class Step2Trainer:
     """EGGROLL trainer for SchNet."""
 
-    def __init__(
-        self,
-        model: nn.Module,
-        config: Dict[str, Any],
-        device: torch.device,
-        experiment_dir: str,
-    ):
+    def __init__(self, model, config, device, experiment_dir):
         self.model = model.to(device)
         self.config = config
         self.device = device
@@ -44,13 +35,14 @@ class Step2Trainer:
         ecfg = config.get('eggroll', {})
         self.eggroll = EggrollOptimizer(
             model,
-            sigma=ecfg.get('sigma', 0.05),
-            lr=ecfg.get('learning_rate', 0.01),
-            rank=ecfg.get('rank', 1),
-            pop_size=ecfg.get('pop_size', 256),
+            sigma=ecfg.get('sigma', 0.01),
+            lr=ecfg.get('learning_rate', 0.1),
+            rank=ecfg.get('rank', 16),
+            pop_size=ecfg.get('pop_size', 32),
             group_size=ecfg.get('group_size', 0),
-            inner_opt=ecfg.get('inner_opt', 'adam'),
-            sigma_decay=ecfg.get('sigma_decay', 0.999),
+            inner_opt=ecfg.get('inner_opt', 'sgd'),
+            sigma_decay=ecfg.get('sigma_decay', 0.99),
+            lr_decay=ecfg.get('lr_decay', 0.99),
             base_seed=ecfg.get('base_seed', 42),
         )
 
@@ -61,6 +53,7 @@ class Step2Trainer:
         self._best_state = None
 
     def get_val_score(self, metrics):
+        """Lower is better. Regression: RMSE. Classification: -AUC."""
         if self.task_type == 'classification':
             return -metrics.get('auc', 0.0)
         return metrics.get('rmse', metrics['loss'])
@@ -69,10 +62,10 @@ class Step2Trainer:
         cfg = self.config
         tcfg = cfg.get('training', {})
         scfg = cfg.get('schnet', {})
-        dcfg = cfg.get('data', {})
-        ccfg = cfg.get('conformer', {})
         ecfg = cfg.get('eggroll', {})
         pcfg = cfg.get('pretrain', {})
+        dcfg = cfg.get('data', {})
+        ccfg = cfg.get('conformer', {})
 
         print("\n" + "=" * 70)
         print("STEP 2 HYPERPARAMETERS")
@@ -83,41 +76,33 @@ class Step2Trainer:
         print(f"  {'gpu':<30s}: {cfg.get('gpu', 'N/A')}")
         print(f"\n  --- Dataset ---")
         print(f"  {'name':<30s}: {cfg['dataset']['name']}")
-        print(f"  {'file':<30s}: {cfg['dataset'].get('file', 'N/A')}")
         print(f"  {'task_type':<30s}: {cfg['dataset']['task_type']}")
         print(f"  {'metric':<30s}: {cfg['dataset'].get('metric', 'rmse')}")
         print(f"\n  --- Data / Splitting ---")
         print(f"  {'split_method':<30s}: {dcfg.get('split_method', 'N/A')}")
         print(f"  {'random_seed_split':<30s}: {dcfg.get('random_seed_split', 'N/A')}")
-        print(f"\n  --- Conformer ---")
-        print(f"  {'num_conformers':<30s}: {ccfg.get('num_conformers', 1)}")
         print(f"\n  --- Model (SchNet) ---")
         print(f"  {'n_atom_basis':<30s}: {scfg.get('n_atom_basis', 128)}")
         print(f"  {'n_interactions':<30s}: {scfg.get('n_interactions', 6)}")
-        print(f"  {'n_rbf':<30s}: {scfg.get('n_rbf', 50)}")
-        print(f"  {'n_filters':<30s}: {scfg.get('n_filters', 128)}")
         print(f"  {'cutoff':<30s}: {scfg.get('cutoff', 5.0)}")
         print(f"  {'Total params':<30s}: {self.model.num_params:,}")
-        print(f"  {'Trainable params':<30s}: {self.model.num_trainable_params:,}")
         print(f"\n  --- Pretrained Backbone ---")
         print(f"  {'use_qm9_pretrained':<30s}: {pcfg.get('use_qm9_pretrained', False)}")
-        if pcfg.get('use_qm9_pretrained', False):
-            print(f"  {'qm9_target':<30s}: {pcfg.get('qm9_target', 7)}")
         print(f"\n  --- EGGROLL Optimizer ---")
         print(f"  {'Optimizer':<30s}: EGGROLL")
-        print(f"  {'sigma (initial)':<30s}: {ecfg.get('sigma', 0.05)}")
-        print(f"  {'sigma_decay':<30s}: {ecfg.get('sigma_decay', 0.999)}")
-        print(f"  {'rank':<30s}: {ecfg.get('rank', 1)}")
-        print(f"  {'pop_size':<30s}: {ecfg.get('pop_size', 256)}")
-        print(f"  {'num_pairs':<30s}: {ecfg.get('pop_size', 256) // 2}")
+        print(f"  {'sigma (initial)':<30s}: {ecfg.get('sigma', 0.01)}")
+        print(f"  {'sigma_decay':<30s}: {ecfg.get('sigma_decay', 0.99)}")
+        print(f"  {'rank':<30s}: {ecfg.get('rank', 16)}")
+        print(f"  {'pop_size':<30s}: {ecfg.get('pop_size', 32)}")
+        print(f"  {'num_pairs':<30s}: {ecfg.get('pop_size', 32) // 2}")
         print(f"  {'group_size':<30s}: {ecfg.get('group_size', 0)}")
-        print(f"  {'inner_opt':<30s}: {ecfg.get('inner_opt', 'adam')}")
-        print(f"  {'learning_rate':<30s}: {ecfg.get('learning_rate', 0.01)}")
-        print(f"  {'base_seed':<30s}: {ecfg.get('base_seed', 42)}")
+        print(f"  {'inner_opt':<30s}: {ecfg.get('inner_opt', 'sgd')}")
+        print(f"  {'learning_rate (initial)':<30s}: {ecfg.get('learning_rate', 0.1)}")
+        print(f"  {'lr_decay':<30s}: {ecfg.get('lr_decay', 0.99)}")
         print(f"\n  --- Training ---")
         print(f"  {'epochs':<30s}: {self.epochs}")
         print(f"  {'batch_size':<30s}: {tcfg.get('batch_size', 32)}")
-        print(f"  {'early_stopping_patience':<30s}: {self.patience}")
+        print(f"  {'early_stopping (val_rmse)':<30s}: patience={self.patience}")
         fwd = self.eggroll.pop_size * len(train_loader)
         print(f"  {'Forward passes/epoch':<30s}: {fwd:,} "
               f"({self.eggroll.pop_size} workers x {len(train_loader)} batches)")
@@ -141,11 +126,17 @@ class Step2Trainer:
         for epoch in range(1, self.epochs + 1):
             epoch_start = time.time()
 
+            # 1. Evaluate population
             fitness, noise = self.eggroll.evaluate_population(
                 train_loader, epoch, self.device)
-            self.eggroll.step(fitness, noise, epoch)
-            self.eggroll.decay_sigma()
 
+            # 2. EGGROLL update
+            self.eggroll.step(fitness, noise, epoch)
+
+            # 3. Decay lr AND sigma
+            self.eggroll.decay()
+
+            # 4. Validate (best selection by val RMSE)
             val_metrics = self.eggroll.evaluate(valid_loader, self.device)
             val_score = self.get_val_score(val_metrics)
 
@@ -167,6 +158,7 @@ class Step2Trainer:
                 'worst_fitness': fitness.min().item(),
                 'val_loss': val_metrics['loss'],
                 'sigma': self.eggroll.sigma,
+                'lr': self.eggroll.current_lr,
                 'elapsed': elapsed,
             }
             if self.task_type == 'regression':
@@ -182,6 +174,7 @@ class Step2Trainer:
                         f"[{fitness.min().item():+.4f}, {fitness.max().item():+.4f}] | "
                         f"val_rmse={val_metrics['rmse']:.4f} | "
                         f"val_mae={val_metrics['mae']:.4f} | "
+                        f"lr={self.eggroll.current_lr:.5f} | "
                         f"sigma={self.eggroll.sigma:.5f} | "
                         f"{elapsed:.1f}s"
                     )
@@ -200,7 +193,9 @@ class Step2Trainer:
         print(f"  Total time:             {total_time:.1f}s ({total_time/60:.1f}min)")
         print(f"  Avg time/epoch:         {total_time/epoch:.1f}s")
         print(f"  Final sigma:            {self.eggroll.sigma:.6f}")
+        print(f"  Final lr:               {self.eggroll.current_lr:.6f}")
         print(f"  Initial sigma:          {self.eggroll.sigma_init}")
+        print(f"  Initial lr:             {self.eggroll._initial_lr}")
 
         if self.history:
             best_rec = self.history[self.best_epoch - 1]
@@ -232,6 +227,7 @@ class Step2Trainer:
             'test_metrics': test_metrics,
             'val_best_score': self.best_val_metric,
             'final_sigma': self.eggroll.sigma,
+            'final_lr': self.eggroll.current_lr,
             'config': self.config,
             'history': self.history,
         }
