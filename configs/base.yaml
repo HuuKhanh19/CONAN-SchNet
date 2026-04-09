@@ -1,5 +1,5 @@
 # =============================================================================
-# CONAN-SchNet: Base Configuration (Hydra)
+# CONAN: Base Configuration (Hydra)
 # =============================================================================
 
 defaults:
@@ -65,50 +65,41 @@ data:
 
 # ___ Conformer Generation ___________________________________________________
 conformer:
-  num_conformers: 1
+  num_conformers: 5
   max_attempts: 500
   prune_rms_thresh: 0.0
   use_random_coords: false
   optimize_mmff: true
   random_seed_gen: 42
 
-# ___ SchNet Model ___________________________________________________________
-schnet:
-  n_atom_basis: 128
-  n_interactions: 6
-  n_rbf: 50
-  cutoff: 5.0
-  n_filters: 128
-  atomref: null
+# ___ UniMol v1 Model ________________________________________________________
+unimol:
+  data_type: "molecule"
+  remove_hs: false
+  max_atoms: 256
+  pooler_dropout: 0.0
 
-# ___ Pretrained Backbone ____________________________________________________
-pretrain:
-  use_qm9_pretrained: true
-  qm9_target: 7
-  cache_dir: "pretrained"
-
-# ___ Training (Step 1 _ Adam baseline) ______________________________________
+# ___ Training (Step 1 - Adam baseline, matching UniMol repo defaults) ________
 training:
-  epochs: 600
-  batch_size: 32
-  learning_rate: 0.001
-  weight_decay: 0.00001
-  scheduler: "reduce_on_plateau"
-  scheduler_patience: 25
-  scheduler_factor: 0.5
-  early_stopping_patience: 200
+  epochs: 100
+  batch_size: 8
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  scheduler: "warmup_linear"
+  warmup_ratio: 0.03
+  early_stopping_patience: 10
   save_checkpoints: true
-  gradient_clip: 1.0
+  gradient_clip: 5.0
 
 # ___ EGGROLL (Step 2) _______________________________________________________
 # Tuned to match UniMol EGGROLL config that achieved test RMSE=0.85
 eggroll:
-  sigma: 0.01                 # Perturbation std (keep small for pretrained!)
-  sigma_decay: 0.999           # Decay per epoch (0.01 -> 0.0001 over 460 epochs)
-  rank: 16                    # Low-rank rank (N*r=32*16=512 >= max layer dim=128)
-  pop_size: 128                # Population size (32 workers = 16 antithetical pairs)
-  group_size: 0               # 0 = global rank transform
-  learning_rate: 1.0          # Initial LR (matches UniMol)
-  lr_decay: 0.999              # LR decay per epoch (0.1 -> 0.001 over 460 epochs)
-  inner_opt: "sgd"            # SGD (matches JAX optax.sgd)
-  base_seed: 42               # PRNG seed
+  sigma: 0.01
+  sigma_decay: 0.99
+  rank: 16
+  pop_size: 32
+  group_size: 0
+  inner_opt: "sgd"
+  learning_rate: 0.1
+  lr_decay: 0.99
+  base_seed: 42

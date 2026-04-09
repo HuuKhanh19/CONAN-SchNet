@@ -1,5 +1,5 @@
 """
-Step 2 Trainer: SchNet with EGGROLL optimizer.
+Step 2 Trainer: UniMol v1 with EGGROLL optimizer.
 
 Replaces Adam (Step 1) with EGGROLL evolutionary strategy.
 Same model, same data pipeline, same evaluation -- only the optimizer changes.
@@ -18,7 +18,7 @@ from src.optimizers.eggroll import EggrollOptimizer
 
 
 class Step2Trainer:
-    """EGGROLL trainer for SchNet."""
+    """EGGROLL trainer for UniMol v1."""
 
     def __init__(self, model, config, device, experiment_dir):
         self.model = model.to(device)
@@ -61,9 +61,8 @@ class Step2Trainer:
     def _print_hyperparameters(self, train_loader):
         cfg = self.config
         tcfg = cfg.get('training', {})
-        scfg = cfg.get('schnet', {})
+        ucfg = cfg.get('unimol', {})
         ecfg = cfg.get('eggroll', {})
-        pcfg = cfg.get('pretrain', {})
         dcfg = cfg.get('data', {})
         ccfg = cfg.get('conformer', {})
 
@@ -81,13 +80,11 @@ class Step2Trainer:
         print(f"\n  --- Data / Splitting ---")
         print(f"  {'split_method':<30s}: {dcfg.get('split_method', 'N/A')}")
         print(f"  {'random_seed_split':<30s}: {dcfg.get('random_seed_split', 'N/A')}")
-        print(f"\n  --- Model (SchNet) ---")
-        print(f"  {'n_atom_basis':<30s}: {scfg.get('n_atom_basis', 128)}")
-        print(f"  {'n_interactions':<30s}: {scfg.get('n_interactions', 6)}")
-        print(f"  {'cutoff':<30s}: {scfg.get('cutoff', 5.0)}")
+        print(f"\n  --- Model (UniMol v1) ---")
+        print(f"  {'data_type':<30s}: {ucfg.get('data_type', 'molecule')}")
+        print(f"  {'remove_hs':<30s}: {ucfg.get('remove_hs', False)}")
+        print(f"  {'max_atoms':<30s}: {ucfg.get('max_atoms', 256)}")
         print(f"  {'Total params':<30s}: {self.model.num_params:,}")
-        print(f"\n  --- Pretrained Backbone ---")
-        print(f"  {'use_qm9_pretrained':<30s}: {pcfg.get('use_qm9_pretrained', False)}")
         print(f"\n  --- EGGROLL Optimizer ---")
         print(f"  {'Optimizer':<30s}: EGGROLL")
         print(f"  {'sigma (initial)':<30s}: {ecfg.get('sigma', 0.01)}")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Step 1: SchNet Baseline (Adam optimizer)."""
+"""Step 1: UniMol v1 Baseline (Adam optimizer)."""
 
 import os
 import sys
@@ -14,7 +14,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.data.data_loader import prepare_dataset, save_splits, create_dataloaders
-from src.models.schnet import build_schnet_model
+from src.models.unimol import build_unimol_model
 from src.trainers.step1_trainer import Step1Trainer
 from src.utils.utils import seed_everything
 
@@ -28,7 +28,7 @@ def run_step1(config: dict, device: torch.device):
     print(f"random_seed_train={train_seed}")
 
     print(f"\n{'='*60}")
-    print(f"Step 1: SchNet Baseline - {dataset_name.upper()}")
+    print(f"Step 1: UniMol v1 Baseline - {dataset_name.upper()}")
     print(f"{'='*60}")
 
     # -- Load or prepare data --
@@ -53,29 +53,16 @@ def run_step1(config: dict, device: torch.device):
     )
 
     # -- Build model --
-    model = build_schnet_model(config)
+    model = build_unimol_model(config)
 
     # -- Initialize output bias from training data --
-    # This makes initial prediction ~ mean(target), so initial RMSE ~ std(target)
     mean_target = float(train_df['target'].mean())
-    # Compute mean number of atoms from the dataset
-    mean_n_atoms = float(np.mean([
-        len(z) for z in train_loader.dataset.atomic_numbers
-    ]))
-    model.init_output_bias(mean_target, mean_n_atoms,
-                           num_conformers=config['conformer']['num_conformers'])
+    model.init_output_bias(
+        mean_target,
+        num_conformers=config['conformer']['num_conformers'],
+    )
 
     print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
-
-    # Optional verbose parameter dump
-    if config.get('experiment', {}).get('verbose', False):
-        print("\n" + "=" * 60)
-        print("MODEL PARAMETER SHAPES")
-        print("=" * 60)
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                print(f"  {name:<50s} | {str(list(param.shape)):<20s} | {param.numel():,}")
-        print("=" * 60)
 
     # -- Train --
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -96,16 +83,15 @@ def run_step1(config: dict, device: torch.device):
 def main(cfg: DictConfig):
     os.chdir(hydra.utils.get_original_cwd())
 
-    # Resolve dataset
     dataset_name = cfg.dataset_name
     assert dataset_name in cfg.datasets, (
-        f"Unknown dataset: {dataset_name}. Choose from: {list(cfg.datasets.keys())}"
+        f"Unknown dataset: {dataset_name}. "
+        f"Choose from: {list(cfg.datasets.keys())}"
     )
 
     config = OmegaConf.to_container(cfg, resolve=True)
     config['dataset'] = config['datasets'][dataset_name]
 
-    # Device
     gpu = cfg.get('gpu', 0)
     if torch.cuda.is_available() and gpu >= 0:
         device = torch.device(f"cuda:{gpu}")
@@ -116,12 +102,9 @@ def main(cfg: DictConfig):
 
     results = run_step1(config, device)
 
-    # Summary
     tm = results.get('test_metrics', {})
     if 'rmse' in tm:
         print(f"\n{dataset_name}: RMSE={tm['rmse']:.4f}, MAE={tm['mae']:.4f}")
-    elif 'auc' in tm:
-        print(f"\n{dataset_name}: AUC={tm['auc']:.4f}")
 
 
 if __name__ == "__main__":

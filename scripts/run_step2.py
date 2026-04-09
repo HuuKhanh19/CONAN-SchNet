@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Step 2: SchNet with EGGROLL optimizer."""
+"""Step 2: UniMol v1 with EGGROLL optimizer."""
 
 import os
 import sys
@@ -14,7 +14,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.data.data_loader import prepare_dataset, save_splits, create_dataloaders
-from src.models.schnet import build_schnet_model
+from src.models.unimol import build_unimol_model
 from src.trainers.step2_trainer import Step2Trainer
 from src.utils.utils import seed_everything
 
@@ -26,7 +26,7 @@ def run_step2(config: dict, device: torch.device):
     print(f"random_seed_train={train_seed}")
 
     print(f"\n{'='*60}")
-    print(f"Step 2: SchNet + EGGROLL - {dataset_name.upper()}")
+    print(f"Step 2: UniMol v1 + EGGROLL - {dataset_name.upper()}")
     print(f"{'='*60}")
 
     # -- Load or prepare data --
@@ -51,15 +51,14 @@ def run_step2(config: dict, device: torch.device):
     )
 
     # -- Build model (with pretrained backbone) --
-    model = build_schnet_model(config)
+    model = build_unimol_model(config)
 
     # -- Initialize output bias --
     mean_target = float(train_df['target'].mean())
-    mean_n_atoms = float(np.mean([
-        len(z) for z in train_loader.dataset.atomic_numbers
-    ]))
-    model.init_output_bias(mean_target, mean_n_atoms,
-                           num_conformers=config['conformer']['num_conformers'])
+    model.init_output_bias(
+        mean_target,
+        num_conformers=config['conformer']['num_conformers'],
+    )
 
     print(f"Model: {model.num_params:,} params, {model.num_trainable_params:,} trainable")
 
@@ -84,7 +83,8 @@ def main(cfg: DictConfig):
 
     dataset_name = cfg.dataset_name
     assert dataset_name in cfg.datasets, (
-        f"Unknown dataset: {dataset_name}. Choose from: {list(cfg.datasets.keys())}"
+        f"Unknown dataset: {dataset_name}. "
+        f"Choose from: {list(cfg.datasets.keys())}"
     )
 
     config = OmegaConf.to_container(cfg, resolve=True)
